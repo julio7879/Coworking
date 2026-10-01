@@ -87,9 +87,9 @@ CREATE TABLE usuarios (
         CHECK (tipo_usuario <> 'Invitado' OR anfitrion_id IS NOT NULL)
 ) ENGINE=InnoDB;
 
--- ---------------------------------------------------------------------
+
 -- 4. tipos_membresia
--- ---------------------------------------------------------------------
+
 CREATE TABLE tipos_membresia (
     id                       INT           NOT NULL AUTO_INCREMENT,
     nombre                   VARCHAR(50)   NOT NULL,
@@ -105,9 +105,9 @@ CREATE TABLE tipos_membresia (
     CONSTRAINT chk_tipos_membresia_creditos  CHECK (creditos_incluidos >= 0)
 ) ENGINE=InnoDB;
 
--- ---------------------------------------------------------------------
+
 -- 5. membresias
--- ---------------------------------------------------------------------
+
 CREATE TABLE membresias (
     id           INT      NOT NULL AUTO_INCREMENT,
     usuario_id   INT      NOT NULL,
@@ -125,9 +125,9 @@ CREATE TABLE membresias (
     CONSTRAINT chk_membresias_renovaciones CHECK (renovaciones >= 0)
 ) ENGINE=InnoDB;
 
--- ---------------------------------------------------------------------
+
 -- 6. historial_membresias
--- ---------------------------------------------------------------------
+
 CREATE TABLE historial_membresias (
     id            INT      NOT NULL AUTO_INCREMENT,
     usuario_id    INT      NOT NULL,
@@ -143,9 +143,9 @@ CREATE TABLE historial_membresias (
         ON DELETE RESTRICT ON UPDATE RESTRICT
 ) ENGINE=InnoDB;
 
--- ---------------------------------------------------------------------
+
 -- 7. tipos_espacio
--- ---------------------------------------------------------------------
+
 CREATE TABLE tipos_espacio (
     id                   INT         NOT NULL AUTO_INCREMENT,
     nombre               VARCHAR(60) NOT NULL,
@@ -155,4 +155,81 @@ CREATE TABLE tipos_espacio (
     usa_creditos         BOOLEAN     NOT NULL DEFAULT FALSE,
     PRIMARY KEY (id),
     UNIQUE KEY uq_tipos_espacio_nombre (nombre)
+) ENGINE=InnoDB;
+
+
+-- 8. espacios
+
+CREATE TABLE espacios (
+    id               INT           NOT NULL AUTO_INCREMENT,
+    tipo_id          INT           NOT NULL,
+    nombre           VARCHAR(80)   NOT NULL,
+    ubicacion_fisica VARCHAR(150)  NOT NULL,
+    capacidad_maxima INT           NOT NULL,
+    tarifa_hora      DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+    tarifa_mes       DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+    estado           ENUM('Disponible','Mantenimiento','Inactivo') NOT NULL DEFAULT 'Disponible',
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_espacios_nombre (nombre),
+    CONSTRAINT fk_espacios_tipo FOREIGN KEY (tipo_id) REFERENCES tipos_espacio (id)
+        ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT chk_espacios_capacidad   CHECK (capacidad_maxima > 0),
+    CONSTRAINT chk_espacios_tarifa_hora CHECK (tarifa_hora >= 0),
+    CONSTRAINT chk_espacios_tarifa_mes  CHECK (tarifa_mes >= 0)
+) ENGINE=InnoDB;
+
+
+-- 9. horarios_disponibilidad
+
+CREATE TABLE horarios_disponibilidad (
+    id            INT     NOT NULL AUTO_INCREMENT,
+    espacio_id    INT     NULL,
+    dia_semana    TINYINT NOT NULL,
+    hora_apertura TIME    NOT NULL,
+    hora_cierre   TIME    NOT NULL,
+    PRIMARY KEY (id),
+    CONSTRAINT fk_horarios_espacio FOREIGN KEY (espacio_id) REFERENCES espacios (id)
+        ON DELETE CASCADE ON UPDATE RESTRICT,
+    CONSTRAINT chk_horarios_dia   CHECK (dia_semana BETWEEN 1 AND 7),
+    CONSTRAINT chk_horarios_rango CHECK (hora_cierre > hora_apertura)
+) ENGINE=InnoDB;
+
+
+-- 10. reservas
+
+CREATE TABLE reservas (
+    id               INT           NOT NULL AUTO_INCREMENT,
+    usuario_id       INT           NOT NULL,
+    espacio_id       INT           NOT NULL,
+    modalidad        ENUM('Hora','Mes') NOT NULL,
+    fecha_inicio     DATETIME      NOT NULL,
+    fecha_fin        DATETIME      NOT NULL,
+    num_personas     INT           NOT NULL DEFAULT 1,
+    estado           ENUM('Pendiente','Confirmada','Cancelada','No_Show','Completada')
+                     NOT NULL DEFAULT 'Pendiente',
+    costo_total      DECIMAL(12,2) NOT NULL,
+    creditos_usados  DECIMAL(6,2)  NOT NULL DEFAULT 0.00,
+    monto_facturable DECIMAL(12,2) NOT NULL,
+    PRIMARY KEY (id),
+    CONSTRAINT fk_reservas_usuario FOREIGN KEY (usuario_id) REFERENCES usuarios (id)
+        ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT fk_reservas_espacio FOREIGN KEY (espacio_id) REFERENCES espacios (id)
+        ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT chk_reservas_periodo     CHECK (fecha_fin > fecha_inicio),
+    CONSTRAINT chk_reservas_personas    CHECK (num_personas > 0),
+    CONSTRAINT chk_reservas_costo       CHECK (costo_total >= 0),
+    CONSTRAINT chk_reservas_creditos    CHECK (creditos_usados >= 0),
+    CONSTRAINT chk_reservas_facturable  CHECK (monto_facturable >= 0)
+) ENGINE=InnoDB;
+
+
+-- 11. servicios_adicionales
+
+CREATE TABLE servicios_adicionales (
+    id     INT           NOT NULL AUTO_INCREMENT,
+    nombre VARCHAR(80)   NOT NULL,
+    precio DECIMAL(12,2) NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_servicios_adicionales_nombre (nombre),
+    CONSTRAINT chk_servicios_adicionales_precio CHECK (precio >= 0)
 ) ENGINE=InnoDB;
