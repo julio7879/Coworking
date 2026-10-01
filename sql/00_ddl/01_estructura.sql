@@ -398,9 +398,9 @@ CREATE TABLE movimientos_credito (
             OR (tipo = 'Reinicio'   AND creditos >= 0))
 ) ENGINE=InnoDB;
 
--- ---------------------------------------------------------------------
+
 -- 20. cola_notificaciones
--- ---------------------------------------------------------------------
+
 CREATE TABLE cola_notificaciones (
     id             BIGINT       NOT NULL AUTO_INCREMENT,
     tipo           VARCHAR(40)  NOT NULL,
@@ -412,9 +412,9 @@ CREATE TABLE cola_notificaciones (
     PRIMARY KEY (id)
 ) ENGINE=InnoDB;
 
--- ---------------------------------------------------------------------
+
 -- 21. configuracion_sistema
--- ---------------------------------------------------------------------
+
 CREATE TABLE configuracion_sistema (
     id    INT          NOT NULL AUTO_INCREMENT,
     clave VARCHAR(60)  NOT NULL,
@@ -423,7 +423,7 @@ CREATE TABLE configuracion_sistema (
     UNIQUE KEY uq_configuracion_clave (clave)
 ) ENGINE=InnoDB;
 
--- ---------------------------------------------------------------------
+
 -- 22. logs_auditoria
 -- ---------------------------------------------------------------------
 CREATE TABLE logs_auditoria (
@@ -435,9 +435,9 @@ CREATE TABLE logs_auditoria (
     PRIMARY KEY (id)
 ) ENGINE=InnoDB;
 
--- ---------------------------------------------------------------------
+
 -- 23. reportes_generados
--- ---------------------------------------------------------------------
+
 CREATE TABLE reportes_generados (
     id               BIGINT      NOT NULL AUTO_INCREMENT,
     tipo             VARCHAR(60) NOT NULL,
@@ -507,14 +507,14 @@ CREATE INDEX idx_reportes_tipo_fecha  ON reportes_generados (tipo, fecha_generac
 -- SECCIÓN 3: VISTAS DEL SISTEMA
 -- =====================================================================
 
--- ---------------------------------------------------------------------
+
 -- 1. v_estado_espacio
 -- Estado en tiempo real del espacio:
 --   - Ocupado: si tiene sesión de Sala abierta en asistencias.
 --   - Reservado: si tiene reserva Confirmada en curso sin sesión abierta.
 --   - Mantenimiento / Inactivo: según estado del espacio.
 --   - Libre: en cualquier otro caso.
--- ---------------------------------------------------------------------
+
 CREATE OR REPLACE VIEW v_estado_espacio AS
 SELECT
     e.id AS espacio_id,
@@ -550,11 +550,11 @@ SELECT
 FROM espacios e
 JOIN tipos_espacio te ON e.tipo_id = te.id;
 
--- ---------------------------------------------------------------------
+
 -- 2. v_usuarios_bloqueados
 -- Usuarios con facturas vencidas más allá de 'dias_bloqueo' (10 días)
 -- con saldo pendiente > 0.
--- ---------------------------------------------------------------------
+
 CREATE OR REPLACE VIEW v_usuarios_bloqueados AS
 SELECT DISTINCT
     u.id AS usuario_id,
@@ -575,12 +575,12 @@ WHERE f.saldo_pendiente > 0
       WHERE clave = 'dias_bloqueo'
   );
 
--- ---------------------------------------------------------------------
+
 -- 3. v_creditos_saldo
 -- Saldo de créditos calculado desde el libro de movimientos:
 --   - Membresía individual: suma total histórica de movimientos de esa membresía.
 --   - Empresa (pool mensual): suma desde el día 1 del mes actual (regla 4).
--- ---------------------------------------------------------------------
+
 CREATE OR REPLACE VIEW v_creditos_saldo AS
 SELECT
     'Membresia' AS origen,
@@ -603,10 +603,10 @@ LEFT JOIN movimientos_credito mc ON mc.empresa_id = e.id
     AND mc.fecha >= DATE_FORMAT(CURRENT_DATE, '%Y-%m-01 00:00:00')
 GROUP BY e.id;
 
--- ---------------------------------------------------------------------
+
 -- 4. v_mis_reservas
 -- Reservas visibles para el usuario autenticado en la sesión de BD.
--- ---------------------------------------------------------------------
+
 CREATE OR REPLACE VIEW v_mis_reservas AS
 SELECT
     r.id AS reserva_id,
@@ -625,10 +625,10 @@ JOIN espacios e ON r.espacio_id = e.id
 JOIN usuarios u ON r.usuario_id = u.id
 WHERE u.usuario_bd = SUBSTRING_INDEX(USER(), '@', 1);
 
--- ---------------------------------------------------------------------
+
 -- 5. v_mis_facturas
 -- Facturas visibles para el usuario autenticado en la sesión de BD.
--- ---------------------------------------------------------------------
+
 CREATE OR REPLACE VIEW v_mis_facturas AS
 SELECT
     f.id AS factura_id,
@@ -645,10 +645,10 @@ FROM facturas f
 JOIN usuarios u ON f.usuario_id = u.id
 WHERE u.usuario_bd = SUBSTRING_INDEX(USER(), '@', 1);
 
--- ---------------------------------------------------------------------
+
 -- 6. v_mis_accesos
 -- Accesos y asistencias visibles para el usuario autenticado.
--- ---------------------------------------------------------------------
+
 CREATE OR REPLACE VIEW v_mis_accesos AS
 SELECT
     a.id AS acceso_id,
@@ -665,10 +665,10 @@ LEFT JOIN asistencias asi ON asi.acceso_id = a.id
 JOIN usuarios u ON a.usuario_id = u.id
 WHERE u.usuario_bd = SUBSTRING_INDEX(USER(), '@', 1);
 
--- ---------------------------------------------------------------------
+
 -- 7. v_empresa_empleados
 -- Empleados visibles para el gerente corporativo autenticado.
--- ---------------------------------------------------------------------
+
 CREATE OR REPLACE VIEW v_empresa_empleados AS
 SELECT
     u.id AS empleado_id,
@@ -690,10 +690,10 @@ LEFT JOIN membresias m ON m.usuario_id = u.id
     )
 WHERE u.empresa_id = g.empresa_id;
 
--- ---------------------------------------------------------------------
+
 -- 8. v_empresa_facturas
 -- Facturas de la empresa visibles para el gerente corporativo autenticado.
--- ---------------------------------------------------------------------
+
 CREATE OR REPLACE VIEW v_empresa_facturas AS
 SELECT
     f.id AS factura_id,
@@ -712,10 +712,10 @@ JOIN empresas e ON f.empresa_id = e.id
 JOIN usuarios g ON g.usuario_bd = SUBSTRING_INDEX(USER(), '@', 1)
 WHERE f.empresa_id = g.empresa_id;
 
--- ---------------------------------------------------------------------
+
 -- 9. v_empresa_creditos
 -- Historial y movimientos del pool de créditos de la empresa.
--- ---------------------------------------------------------------------
+
 CREATE OR REPLACE VIEW v_empresa_creditos AS
 SELECT
     mc.id AS movimiento_id,
