@@ -31,7 +31,6 @@ USE coworking;
 
 -- CREACIÓN DE TABLAS
 
-
 -- 1. roles (Catálogo de roles de aplicación)
 
 CREATE TABLE roles (
@@ -53,7 +52,6 @@ CREATE TABLE empresas (
     PRIMARY KEY (id),
     CONSTRAINT chk_empresas_creditos CHECK (creditos_mensuales >= 0)
 ) ENGINE=InnoDB;
-
 
 -- 3. usuarios
 
@@ -87,7 +85,6 @@ CREATE TABLE usuarios (
         CHECK (tipo_usuario <> 'Invitado' OR anfitrion_id IS NOT NULL)
 ) ENGINE=InnoDB;
 
-
 -- 4. tipos_membresia
 
 CREATE TABLE tipos_membresia (
@@ -104,7 +101,6 @@ CREATE TABLE tipos_membresia (
     CONSTRAINT chk_tipos_membresia_max_res   CHECK (max_reservas_simultaneas >= 0),
     CONSTRAINT chk_tipos_membresia_creditos  CHECK (creditos_incluidos >= 0)
 ) ENGINE=InnoDB;
-
 
 -- 5. membresias
 
@@ -125,7 +121,6 @@ CREATE TABLE membresias (
     CONSTRAINT chk_membresias_renovaciones CHECK (renovaciones >= 0)
 ) ENGINE=InnoDB;
 
-
 -- 6. historial_membresias
 
 CREATE TABLE historial_membresias (
@@ -143,7 +138,6 @@ CREATE TABLE historial_membresias (
         ON DELETE RESTRICT ON UPDATE RESTRICT
 ) ENGINE=InnoDB;
 
-
 -- 7. tipos_espacio
 
 CREATE TABLE tipos_espacio (
@@ -156,7 +150,6 @@ CREATE TABLE tipos_espacio (
     PRIMARY KEY (id),
     UNIQUE KEY uq_tipos_espacio_nombre (nombre)
 ) ENGINE=InnoDB;
-
 
 -- 8. espacios
 
@@ -178,7 +171,6 @@ CREATE TABLE espacios (
     CONSTRAINT chk_espacios_tarifa_mes  CHECK (tarifa_mes >= 0)
 ) ENGINE=InnoDB;
 
-
 -- 9. horarios_disponibilidad
 
 CREATE TABLE horarios_disponibilidad (
@@ -193,7 +185,6 @@ CREATE TABLE horarios_disponibilidad (
     CONSTRAINT chk_horarios_dia   CHECK (dia_semana BETWEEN 1 AND 7),
     CONSTRAINT chk_horarios_rango CHECK (hora_cierre > hora_apertura)
 ) ENGINE=InnoDB;
-
 
 -- 10. reservas
 
@@ -222,7 +213,6 @@ CREATE TABLE reservas (
     CONSTRAINT chk_reservas_facturable  CHECK (monto_facturable >= 0)
 ) ENGINE=InnoDB;
 
-
 -- 11. servicios_adicionales
 
 CREATE TABLE servicios_adicionales (
@@ -233,7 +223,6 @@ CREATE TABLE servicios_adicionales (
     UNIQUE KEY uq_servicios_adicionales_nombre (nombre),
     CONSTRAINT chk_servicios_adicionales_precio CHECK (precio >= 0)
 ) ENGINE=InnoDB;
-
 
 -- 12. metodos_pago
 
@@ -280,7 +269,6 @@ CREATE TABLE facturas (
         CHECK (tipo <> 'Consolidada' OR (usuario_id IS NULL AND empresa_id IS NOT NULL))
 ) ENGINE=InnoDB;
 
-
 -- 14. factura_detalle
 
 CREATE TABLE factura_detalle (
@@ -294,7 +282,6 @@ CREATE TABLE factura_detalle (
     CONSTRAINT fk_factura_detalle_factura FOREIGN KEY (factura_id) REFERENCES facturas (id)
         ON DELETE CASCADE ON UPDATE RESTRICT
 ) ENGINE=InnoDB;
-
 
 -- 15. servicios_contratados
 
@@ -317,4 +304,96 @@ CREATE TABLE servicios_contratados (
         ON DELETE RESTRICT ON UPDATE RESTRICT,
     CONSTRAINT chk_serv_contr_cantidad CHECK (cantidad > 0),
     CONSTRAINT chk_serv_contr_precio   CHECK (precio_unitario >= 0)
+) ENGINE=InnoDB;
+
+-- 16. pagos
+
+CREATE TABLE pagos (
+    id             INT           NOT NULL AUTO_INCREMENT,
+    factura_id     INT           NOT NULL,
+    monto          DECIMAL(12,2) NOT NULL,
+    fecha_pago     DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    metodo_pago_id INT           NOT NULL,
+    referencia     VARCHAR(100)  NULL,
+    estado         ENUM('Aplicado','Cancelado') NOT NULL DEFAULT 'Aplicado',
+    PRIMARY KEY (id),
+    CONSTRAINT fk_pagos_factura FOREIGN KEY (factura_id)     REFERENCES facturas (id)
+        ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT fk_pagos_metodo  FOREIGN KEY (metodo_pago_id) REFERENCES metodos_pago (id)
+        ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT chk_pagos_monto CHECK (monto <> 0)
+) ENGINE=InnoDB;
+
+-- 17. accesos
+
+CREATE TABLE accesos (
+    id                 BIGINT       NOT NULL AUTO_INCREMENT,
+    usuario_id         INT          NOT NULL,
+    reserva_id         INT          NULL,
+    fecha_hora_entrada DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    fecha_hora_salida  DATETIME     NULL,
+    metodo_acceso      ENUM('RFID','QR','Manual') NOT NULL,
+    estado_intento     ENUM('Permitido','Rechazado') NOT NULL DEFAULT 'Rechazado',
+    motivo_rechazo     VARCHAR(150) NULL,
+    PRIMARY KEY (id),
+    CONSTRAINT fk_accesos_usuario FOREIGN KEY (usuario_id) REFERENCES usuarios (id)
+        ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT fk_accesos_reserva FOREIGN KEY (reserva_id) REFERENCES reservas (id)
+        ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT chk_accesos_salida
+        CHECK (fecha_hora_salida IS NULL OR fecha_hora_salida >= fecha_hora_entrada)
+) ENGINE=InnoDB;
+
+-- 18. asistencias
+
+CREATE TABLE asistencias (
+    id            BIGINT   NOT NULL AUTO_INCREMENT,
+    acceso_id     BIGINT   NOT NULL,
+    usuario_id    INT      NOT NULL,
+    reserva_id    INT      NULL,
+    tipo          ENUM('Edificio','Sala') NOT NULL,
+    fecha_entrada DATETIME NOT NULL,
+    fecha_salida  DATETIME NULL,
+    minutos       INT      NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_asistencias_acceso (acceso_id),
+    CONSTRAINT fk_asistencias_acceso  FOREIGN KEY (acceso_id)  REFERENCES accesos (id)
+        ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT fk_asistencias_usuario FOREIGN KEY (usuario_id) REFERENCES usuarios (id)
+        ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT fk_asistencias_reserva FOREIGN KEY (reserva_id) REFERENCES reservas (id)
+        ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT chk_asistencias_salida  CHECK (fecha_salida IS NULL OR fecha_salida >= fecha_entrada),
+    CONSTRAINT chk_asistencias_minutos CHECK (minutos IS NULL OR minutos >= 0),
+    CONSTRAINT chk_asistencias_tipo_reserva
+        CHECK ((tipo = 'Sala' AND reserva_id IS NOT NULL)
+            OR (tipo = 'Edificio' AND reserva_id IS NULL))
+) ENGINE=InnoDB;
+
+-- 19. movimientos_credito
+
+CREATE TABLE movimientos_credito (
+    id           BIGINT       NOT NULL AUTO_INCREMENT,
+    usuario_id   INT          NULL,
+    membresia_id INT          NULL,
+    empresa_id   INT          NULL,
+    reserva_id   INT          NULL,
+    creditos     DECIMAL(6,2) NOT NULL,
+    tipo         ENUM('Reinicio','Consumo','Devolucion') NOT NULL,
+    fecha        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    CONSTRAINT fk_mov_credito_usuario   FOREIGN KEY (usuario_id)   REFERENCES usuarios (id)
+        ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT fk_mov_credito_membresia FOREIGN KEY (membresia_id) REFERENCES membresias (id)
+        ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT fk_mov_credito_empresa   FOREIGN KEY (empresa_id)   REFERENCES empresas (id)
+        ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT fk_mov_credito_reserva   FOREIGN KEY (reserva_id)   REFERENCES reservas (id)
+        ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT chk_mov_credito_origen  CHECK (membresia_id IS NOT NULL OR empresa_id IS NOT NULL),
+    CONSTRAINT chk_mov_credito_usuario CHECK (usuario_id IS NOT NULL OR tipo = 'Reinicio'),
+    CONSTRAINT chk_mov_credito_signo
+        CHECK ((tipo = 'Consumo'    AND creditos < 0)
+            OR (tipo = 'Devolucion' AND creditos > 0)
+            OR (tipo = 'Reinicio'   AND creditos >= 0))
 ) ENGINE=InnoDB;
