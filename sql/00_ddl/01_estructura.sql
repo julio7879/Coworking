@@ -233,3 +233,88 @@ CREATE TABLE servicios_adicionales (
     UNIQUE KEY uq_servicios_adicionales_nombre (nombre),
     CONSTRAINT chk_servicios_adicionales_precio CHECK (precio >= 0)
 ) ENGINE=InnoDB;
+
+
+-- 12. metodos_pago
+
+CREATE TABLE metodos_pago (
+    id     INT         NOT NULL AUTO_INCREMENT,
+    nombre VARCHAR(40) NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_metodos_pago_nombre (nombre)
+) ENGINE=InnoDB;
+
+-- 13. facturas
+
+CREATE TABLE facturas (
+    id                INT           NOT NULL AUTO_INCREMENT,
+    usuario_id        INT           NULL,
+    empresa_id        INT           NULL,
+    reserva_id        INT           NULL,
+    membresia_id      INT           NULL,
+    tipo              ENUM('Membresia','Reserva','Servicio','Penalizacion','Consolidada') NOT NULL,
+    monto_base        DECIMAL(12,2) NOT NULL,
+    recargo_acumulado DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+    ultimo_recargo    DATE          NULL,
+    monto_total       DECIMAL(12,2) GENERATED ALWAYS AS (monto_base + recargo_acumulado) STORED,
+    saldo_pendiente   DECIMAL(12,2) NOT NULL,
+    estado            ENUM('Pendiente','Pagada','Cancelada','Anulada','Incobrable')
+                      NOT NULL DEFAULT 'Pendiente',
+    fecha_emision     DATE          NOT NULL DEFAULT (CURRENT_DATE),
+    fecha_vencimiento DATE          NOT NULL,
+    motivo_anulacion  VARCHAR(255)  NULL,
+    PRIMARY KEY (id),
+    CONSTRAINT fk_facturas_usuario    FOREIGN KEY (usuario_id)   REFERENCES usuarios (id)
+        ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT fk_facturas_empresa    FOREIGN KEY (empresa_id)   REFERENCES empresas (id)
+        ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT fk_facturas_reserva    FOREIGN KEY (reserva_id)   REFERENCES reservas (id)
+        ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT fk_facturas_membresia  FOREIGN KEY (membresia_id) REFERENCES membresias (id)
+        ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT chk_facturas_saldo     CHECK (saldo_pendiente >= 0),
+    CONSTRAINT chk_facturas_base      CHECK (monto_base >= 0),
+    CONSTRAINT chk_facturas_recargo   CHECK (recargo_acumulado >= 0),
+    CONSTRAINT chk_facturas_titular   CHECK (usuario_id IS NOT NULL OR empresa_id IS NOT NULL),
+    CONSTRAINT chk_facturas_consolidada
+        CHECK (tipo <> 'Consolidada' OR (usuario_id IS NULL AND empresa_id IS NOT NULL))
+) ENGINE=InnoDB;
+
+
+-- 14. factura_detalle
+
+CREATE TABLE factura_detalle (
+    id              INT           NOT NULL AUTO_INCREMENT,
+    factura_id      INT           NOT NULL,
+    concepto        VARCHAR(200)  NOT NULL,
+    referencia_tipo VARCHAR(30)   NULL,
+    referencia_id   INT           NULL,
+    monto           DECIMAL(12,2) NOT NULL,
+    PRIMARY KEY (id),
+    CONSTRAINT fk_factura_detalle_factura FOREIGN KEY (factura_id) REFERENCES facturas (id)
+        ON DELETE CASCADE ON UPDATE RESTRICT
+) ENGINE=InnoDB;
+
+
+-- 15. servicios_contratados
+
+CREATE TABLE servicios_contratados (
+    id              INT           NOT NULL AUTO_INCREMENT,
+    usuario_id      INT           NOT NULL,
+    reserva_id      INT           NULL,
+    servicio_id     INT           NOT NULL,
+    cantidad        INT           NOT NULL DEFAULT 1,
+    precio_unitario DECIMAL(12,2) NOT NULL,
+    factura_id      INT           NULL,
+    PRIMARY KEY (id),
+    CONSTRAINT fk_serv_contr_usuario  FOREIGN KEY (usuario_id)  REFERENCES usuarios (id)
+        ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT fk_serv_contr_reserva  FOREIGN KEY (reserva_id)  REFERENCES reservas (id)
+        ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT fk_serv_contr_servicio FOREIGN KEY (servicio_id) REFERENCES servicios_adicionales (id)
+        ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT fk_serv_contr_factura  FOREIGN KEY (factura_id)  REFERENCES facturas (id)
+        ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT chk_serv_contr_cantidad CHECK (cantidad > 0),
+    CONSTRAINT chk_serv_contr_precio   CHECK (precio_unitario >= 0)
+) ENGINE=InnoDB;
