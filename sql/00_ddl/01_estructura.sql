@@ -397,3 +397,337 @@ CREATE TABLE movimientos_credito (
             OR (tipo = 'Devolucion' AND creditos > 0)
             OR (tipo = 'Reinicio'   AND creditos >= 0))
 ) ENGINE=InnoDB;
+
+-- ---------------------------------------------------------------------
+-- 20. cola_notificaciones
+-- ---------------------------------------------------------------------
+CREATE TABLE cola_notificaciones (
+    id             BIGINT       NOT NULL AUTO_INCREMENT,
+    tipo           VARCHAR(40)  NOT NULL,
+    destinatario   VARCHAR(150) NOT NULL,
+    contenido      TEXT         NOT NULL,
+    estado         ENUM('Pendiente','Enviada','Error') NOT NULL DEFAULT 'Pendiente',
+    fecha_creacion DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    fecha_envio    DATETIME     NULL,
+    PRIMARY KEY (id)
+) ENGINE=InnoDB;
+
+-- ---------------------------------------------------------------------
+-- 21. configuracion_sistema
+-- ---------------------------------------------------------------------
+CREATE TABLE configuracion_sistema (
+    id    INT          NOT NULL AUTO_INCREMENT,
+    clave VARCHAR(60)  NOT NULL,
+    valor VARCHAR(255) NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_configuracion_clave (clave)
+) ENGINE=InnoDB;
+
+-- ---------------------------------------------------------------------
+-- 22. logs_auditoria
+-- ---------------------------------------------------------------------
+CREATE TABLE logs_auditoria (
+    id             BIGINT       NOT NULL AUTO_INCREMENT,
+    accion         VARCHAR(100) NOT NULL,
+    tabla_afectada VARCHAR(64)  NOT NULL,
+    registro_id    BIGINT       NULL,
+    fecha          DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id)
+) ENGINE=InnoDB;
+
+-- ---------------------------------------------------------------------
+-- 23. reportes_generados
+-- ---------------------------------------------------------------------
+CREATE TABLE reportes_generados (
+    id               BIGINT      NOT NULL AUTO_INCREMENT,
+    tipo             VARCHAR(60) NOT NULL,
+    datos            JSON        NOT NULL,
+    fecha_generacion DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id)
+) ENGINE=InnoDB;
+
+
+-- =====================================================================
+-- SECCIÓN 2: ÍNDICES SECUNDARIOS (Prefijo idx_)
+-- =====================================================================
+
+-- usuarios
+CREATE INDEX idx_usuarios_fecha_registro ON usuarios (fecha_registro);
+
+-- membresias
+CREATE INDEX idx_membresias_usuario_periodo ON membresias (usuario_id, fecha_inicio, fecha_fin);
+CREATE INDEX idx_membresias_estado_fin      ON membresias (estado, fecha_fin);
+
+-- historial_membresias
+CREATE INDEX idx_hist_memb_usuario_fecha ON historial_membresias (usuario_id, fecha_cambio);
+
+-- horarios_disponibilidad
+CREATE INDEX idx_horarios_espacio_dia ON horarios_disponibilidad (espacio_id, dia_semana);
+
+-- reservas
+CREATE INDEX idx_reservas_espacio_periodo    ON reservas (espacio_id, fecha_inicio, fecha_fin);
+CREATE INDEX idx_reservas_usuario_estado_fin ON reservas (usuario_id, estado, fecha_fin);
+CREATE INDEX idx_reservas_estado_inicio      ON reservas (estado, fecha_inicio);
+
+-- servicios_contratados
+CREATE INDEX idx_serv_contr_usuario_servicio ON servicios_contratados (usuario_id, servicio_id);
+
+-- facturas
+CREATE INDEX idx_facturas_estado_vencimiento ON facturas (estado, fecha_vencimiento);
+CREATE INDEX idx_facturas_usuario_estado     ON facturas (usuario_id, estado);
+CREATE INDEX idx_facturas_empresa_tipo       ON facturas (empresa_id, tipo, fecha_emision);
+CREATE INDEX idx_facturas_tipo_emision       ON facturas (tipo, fecha_emision);
+
+-- pagos
+CREATE INDEX idx_pagos_factura_estado ON pagos (factura_id, estado);
+CREATE INDEX idx_pagos_fecha_estado   ON pagos (fecha_pago, estado);
+
+-- accesos
+CREATE INDEX idx_accesos_usuario_entrada ON accesos (usuario_id, fecha_hora_entrada);
+CREATE INDEX idx_accesos_entrada         ON accesos (fecha_hora_entrada);
+CREATE INDEX idx_accesos_sesion_abierta  ON accesos (usuario_id, estado_intento, fecha_hora_salida);
+
+-- asistencias
+CREATE INDEX idx_asistencias_usuario_tipo_entrada ON asistencias (usuario_id, tipo, fecha_entrada);
+CREATE INDEX idx_asistencias_tipo_entrada         ON asistencias (tipo, fecha_entrada);
+
+-- movimientos_credito
+CREATE INDEX idx_mov_credito_membresia_fecha ON movimientos_credito (membresia_id, fecha);
+CREATE INDEX idx_mov_credito_empresa_fecha   ON movimientos_credito (empresa_id, fecha);
+CREATE INDEX idx_mov_credito_usuario_fecha   ON movimientos_credito (usuario_id, fecha);
+
+-- cola_notificaciones, logs_auditoria, reportes_generados
+CREATE INDEX idx_cola_estado_creacion ON cola_notificaciones (estado, fecha_creacion);
+CREATE INDEX idx_logs_tabla_registro  ON logs_auditoria (tabla_afectada, registro_id);
+CREATE INDEX idx_logs_fecha           ON logs_auditoria (fecha);
+CREATE INDEX idx_reportes_tipo_fecha  ON reportes_generados (tipo, fecha_generacion);
+
+
+-- =====================================================================
+-- SECCIÓN 3: VISTAS DEL SISTEMA
+-- =====================================================================
+
+-- ---------------------------------------------------------------------
+-- 1. v_estado_espacio
+-- Estado en tiempo real del espacio:
+--   - Ocupado: si tiene sesión de Sala abierta en asistencias.
+--   - Reservado: si tiene reserva Confirmada en curso sin sesión abierta.
+--   - Mantenimiento / Inactivo: según estado del espacio.
+--   - Libre: en cualquier otro caso.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE VIEW v_estado_espacio AS
+SELECT
+    e.id AS espacio_id,
+    e.nombre AS espacio_nombre,
+    te.nombre AS tipo_espacio,
+    te.modo_ocupacion,
+    e.capacidad_maxima,
+    CASE
+        WHEN e.estado IN ('Mantenimiento','Inactivo') THEN e.estado
+        WHEN EXISTS (
+            SELECT 1 FROM asistencias a
+            JOIN reservas r ON a.reserva_id = r.id
+            WHERE r.espacio_id = e.id
+              AND a.tipo = 'Sala'
+              AND a.fecha_salida IS NULL
+        ) THEN 'Ocupado'
+        WHEN EXISTS (
+            SELECT 1 FROM reservas r
+            WHERE r.espacio_id = e.id
+              AND r.estado = 'Confirmada'
+              AND NOW() BETWEEN r.fecha_inicio AND r.fecha_fin
+        ) THEN 'Reservado'
+        ELSE 'Libre'
+    END AS estado_actual,
+    (
+        SELECT COUNT(*)
+        FROM asistencias a
+        JOIN reservas r ON a.reserva_id = r.id
+        WHERE r.espacio_id = e.id
+          AND a.tipo = 'Sala'
+          AND a.fecha_salida IS NULL
+    ) AS personas_presentes
+FROM espacios e
+JOIN tipos_espacio te ON e.tipo_id = te.id;
+
+-- ---------------------------------------------------------------------
+-- 2. v_usuarios_bloqueados
+-- Usuarios con facturas vencidas más allá de 'dias_bloqueo' (10 días)
+-- con saldo pendiente > 0.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE VIEW v_usuarios_bloqueados AS
+SELECT DISTINCT
+    u.id AS usuario_id,
+    CONCAT(u.nombre, ' ', u.apellidos) AS usuario_nombre,
+    u.email,
+    f.id AS factura_id,
+    f.tipo AS factura_tipo,
+    f.fecha_vencimiento,
+    DATEDIFF(CURRENT_DATE, f.fecha_vencimiento) AS dias_mora,
+    f.saldo_pendiente
+FROM usuarios u
+JOIN facturas f ON (f.usuario_id = u.id OR f.empresa_id = u.empresa_id)
+WHERE f.saldo_pendiente > 0
+  AND f.estado IN ('Pendiente', 'Incobrable')
+  AND DATEDIFF(CURRENT_DATE, f.fecha_vencimiento) > (
+      SELECT CAST(COALESCE(MAX(valor), '10') AS UNSIGNED)
+      FROM configuracion_sistema
+      WHERE clave = 'dias_bloqueo'
+  );
+
+-- ---------------------------------------------------------------------
+-- 3. v_creditos_saldo
+-- Saldo de créditos calculado desde el libro de movimientos:
+--   - Membresía individual: suma total histórica de movimientos de esa membresía.
+--   - Empresa (pool mensual): suma desde el día 1 del mes actual (regla 4).
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE VIEW v_creditos_saldo AS
+SELECT
+    'Membresia' AS origen,
+    m.id AS origen_id,
+    m.usuario_id,
+    NULL AS empresa_id,
+    COALESCE(SUM(mc.creditos), 0.00) AS saldo_creditos
+FROM membresias m
+LEFT JOIN movimientos_credito mc ON mc.membresia_id = m.id
+GROUP BY m.id, m.usuario_id
+UNION ALL
+SELECT
+    'Empresa' AS origen,
+    e.id AS origen_id,
+    NULL AS usuario_id,
+    e.id AS empresa_id,
+    COALESCE(SUM(mc.creditos), 0.00) AS saldo_creditos
+FROM empresas e
+LEFT JOIN movimientos_credito mc ON mc.empresa_id = e.id
+    AND mc.fecha >= DATE_FORMAT(CURRENT_DATE, '%Y-%m-01 00:00:00')
+GROUP BY e.id;
+
+-- ---------------------------------------------------------------------
+-- 4. v_mis_reservas
+-- Reservas visibles para el usuario autenticado en la sesión de BD.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE VIEW v_mis_reservas AS
+SELECT
+    r.id AS reserva_id,
+    r.usuario_id,
+    e.nombre AS espacio,
+    r.modalidad,
+    r.fecha_inicio,
+    r.fecha_fin,
+    r.num_personas,
+    r.estado,
+    r.costo_total,
+    r.creditos_usados,
+    r.monto_facturable
+FROM reservas r
+JOIN espacios e ON r.espacio_id = e.id
+JOIN usuarios u ON r.usuario_id = u.id
+WHERE u.usuario_bd = SUBSTRING_INDEX(USER(), '@', 1);
+
+-- ---------------------------------------------------------------------
+-- 5. v_mis_facturas
+-- Facturas visibles para el usuario autenticado en la sesión de BD.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE VIEW v_mis_facturas AS
+SELECT
+    f.id AS factura_id,
+    f.usuario_id,
+    f.tipo,
+    f.monto_base,
+    f.recargo_acumulado,
+    f.monto_total,
+    f.saldo_pendiente,
+    f.estado,
+    f.fecha_emision,
+    f.fecha_vencimiento
+FROM facturas f
+JOIN usuarios u ON f.usuario_id = u.id
+WHERE u.usuario_bd = SUBSTRING_INDEX(USER(), '@', 1);
+
+-- ---------------------------------------------------------------------
+-- 6. v_mis_accesos
+-- Accesos y asistencias visibles para el usuario autenticado.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE VIEW v_mis_accesos AS
+SELECT
+    a.id AS acceso_id,
+    a.usuario_id,
+    a.fecha_hora_entrada,
+    a.fecha_hora_salida,
+    a.metodo_acceso,
+    a.estado_intento,
+    a.motivo_rechazo,
+    asi.tipo AS tipo_asistencia,
+    asi.minutos
+FROM accesos a
+LEFT JOIN asistencias asi ON asi.acceso_id = a.id
+JOIN usuarios u ON a.usuario_id = u.id
+WHERE u.usuario_bd = SUBSTRING_INDEX(USER(), '@', 1);
+
+-- ---------------------------------------------------------------------
+-- 7. v_empresa_empleados
+-- Empleados visibles para el gerente corporativo autenticado.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE VIEW v_empresa_empleados AS
+SELECT
+    u.id AS empleado_id,
+    CONCAT(u.nombre, ' ', u.apellidos) AS nombre_completo,
+    u.email,
+    u.telefono,
+    u.activo,
+    u.fecha_registro,
+    m.id AS membresia_id,
+    m.estado AS estado_membresia,
+    m.fecha_fin AS vigencia_membresia
+FROM usuarios u
+JOIN usuarios g ON g.usuario_bd = SUBSTRING_INDEX(USER(), '@', 1)
+LEFT JOIN membresias m ON m.usuario_id = u.id
+    AND m.id = (
+        SELECT m2.id FROM membresias m2
+        WHERE m2.usuario_id = u.id
+        ORDER BY m2.fecha_inicio DESC LIMIT 1
+    )
+WHERE u.empresa_id = g.empresa_id;
+
+-- ---------------------------------------------------------------------
+-- 8. v_empresa_facturas
+-- Facturas de la empresa visibles para el gerente corporativo autenticado.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE VIEW v_empresa_facturas AS
+SELECT
+    f.id AS factura_id,
+    f.empresa_id,
+    e.nombre AS empresa_nombre,
+    f.tipo,
+    f.monto_base,
+    f.recargo_acumulado,
+    f.monto_total,
+    f.saldo_pendiente,
+    f.estado,
+    f.fecha_emision,
+    f.fecha_vencimiento
+FROM facturas f
+JOIN empresas e ON f.empresa_id = e.id
+JOIN usuarios g ON g.usuario_bd = SUBSTRING_INDEX(USER(), '@', 1)
+WHERE f.empresa_id = g.empresa_id;
+
+-- ---------------------------------------------------------------------
+-- 9. v_empresa_creditos
+-- Historial y movimientos del pool de créditos de la empresa.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE VIEW v_empresa_creditos AS
+SELECT
+    mc.id AS movimiento_id,
+    mc.empresa_id,
+    e.nombre AS empresa_nombre,
+    u.nombre AS usuario_nombre,
+    mc.reserva_id,
+    mc.creditos,
+    mc.tipo,
+    mc.fecha
+FROM movimientos_credito mc
+JOIN empresas e ON mc.empresa_id = e.id
+LEFT JOIN usuarios u ON mc.usuario_id = u.id
+JOIN usuarios g ON g.usuario_bd = SUBSTRING_INDEX(USER(), '@', 1)
+WHERE mc.empresa_id = g.empresa_id;
