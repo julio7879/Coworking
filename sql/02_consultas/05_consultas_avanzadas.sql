@@ -61,7 +61,7 @@ WHERE a.tipo = 'Sala'
 GROUP BY e.id, e.nombre, te.nombre
 ORDER BY horas_uso_real DESC;
 
--- 83: Ingreso promedio por usuario (subconsulta escalar)
+-- 83: Ingreso promedio por usuario 
 
 SELECT
     u.id,
@@ -316,7 +316,7 @@ HAVING SUM(CASE WHEN p.monto > 0 THEN p.monto ELSE 0 END) > 0
    AND f.saldo_pendiente > 0
 ORDER BY f.saldo_pendiente DESC;
 
--- 95: Facturación neta por empresa (ordenada)
+-- 95: Facturación neta por empresa 
 
 SELECT
     e.id AS empresa_id,
