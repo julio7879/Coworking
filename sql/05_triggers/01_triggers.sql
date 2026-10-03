@@ -192,3 +192,196 @@ BEGIN
         SET MESSAGE_TEXT = 'No se puede eliminar la membresía: tiene facturas con pagos aplicados';
     END IF;
 END$$
+
+-- SECCIÓN 2: TRIGGERS DE RESERVAS (T6 - T10)
+-- Integrante responsable: Sofia Salazar Hernandez
+
+-- T6. trg_bi_reservas_validaciones
+
+DROP TRIGGER IF EXISTS trg_bi_reservas_validaciones$$
+CREATE TRIGGER trg_bi_reservas_validaciones
+BEFORE INSERT ON reservas
+FOR EACH ROW
+BEGIN
+    DECLARE v_tipo_usuario VARCHAR(20);
+    DECLARE v_membresia_activa BOOLEAN DEFAULT FALSE;
+    DECLARE v_bloqueado BOOLEAN DEFAULT FALSE;
+    DECLARE v_estado_espacio VARCHAR(20);
+    DECLARE v_modo_ocupacion VARCHAR(20);
+    DECLARE v_capacidad_max INT;
+    DECLARE v_perm_hora BOOLEAN;
+    DECLARE v_perm_mes  BOOLEAN;
+    DECLARE v_solapados INT DEFAULT 0;
+    DECLARE v_max_simultaneas INT DEFAULT 1;
+    DECLARE v_activas INT DEFAULT 0;
+    DECLARE v_dia_semana TINYINT;
+    DECLARE v_hora_ini TIME;
+    DECLARE v_hora_fin TIME;
+    DECLARE v_apertura TIME;
+    DECLARE v_cierre TIME;
+
+    IF NEW.fecha_fin <= NEW.fecha_inicio THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'La fecha de fin debe ser posterior a la de inicio';
+    END IF;
+
+    SELECT EXISTS (
+        SELECT 1 FROM v_usuarios_bloqueados WHERE usuario_id = NEW.usuario_id
+    ) INTO v_bloqueado;
+
+    IF v_bloqueado THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Usuario bloqueado para reservas por morosidad';
+    END IF;
+
+    SELECT tipo_usuario INTO v_tipo_usuario FROM usuarios WHERE id = NEW.usuario_id;
+    SET v_membresia_activa = fn_membresia_activa(NEW.usuario_id);
+
+    IF NOT v_membresia_activa AND v_tipo_usuario <> 'Invitado' THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'El usuario no cuenta con una membresía activa';
+    END IF;
+
+    SELECT e.estado, te.modo_ocupacion, e.capacidad_maxima, te.permite_reserva_hora, te.permite_reserva_mes
+    INTO v_estado_espacio, v_modo_ocupacion, v_capacidad_max, v_perm_hora, v_perm_mes
+    FROM espacios e
+    JOIN tipos_espacio te ON e.tipo_id = te.id
+    WHERE e.id = NEW.espacio_id;
+
+    IF v_estado_espacio <> 'Disponible' THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'El espacio no está disponible';
+    END IF;
+
+    IF NEW.modalidad = 'Hora' AND NOT v_perm_hora THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'El espacio no permite reservas por hora';
+    ELSEIF NEW.modalidad = 'Mes' AND NOT v_perm_mes THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'El espacio no permite reservas mensuales';
+    END IF;
+
+    IF NEW.modalidad = 'Hora' THEN
+        SET v_dia_semana = DAYOFWEEK(NEW.fecha_inicio);
+        SET v_hora_ini = TIME(NEW.fecha_inicio);
+        SET v_hora_fin = TIME(NEW.fecha_fin);
+
+        SELECT hora_apertura, hora_cierre INTO v_apertura, v_cierre
+        FROM horarios_disponibilidad
+        WHERE (espacio_id = NEW.espacio_id OR espacio_id IS NULL)
+          AND dia_semana = v_dia_semana
+        ORDER BY espacio_id DESC
+        LIMIT 1;
+
+        IF v_apertura IS NULL OR v_hora_ini < v_apertura OR v_hora_fin > v_cierre THEN
+            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Reserva fuera de los horarios de disponibilidad';
+        END IF;
+    END IF;
+
+    IF NEW.num_personas > v_capacidad_max THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'El número de personas excede la capacidad máxima del espacio';
+    END IF;
+
+    IF v_modo_ocupacion = 'Exclusivo' THEN
+        SELECT COUNT(*) INTO v_solapados
+        FROM reservas
+        WHERE espacio_id = NEW.espacio_id
+          AND estado IN ('Pendiente', 'Confirmada')
+          AND NEW.fecha_inicio < fecha_fin
+          AND NEW.fecha_fin > fecha_inicio;
+
+        IF v_solapados > 0 THEN
+            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Existe solapamiento en el espacio exclusivo solicitado';
+        END IF;
+    ELSE
+        SELECT COALESCE(SUM(num_personas), 0) INTO v_solapados
+        FROM reservas
+        WHERE espacio_id = NEW.espacio_id
+          AND estado IN ('Pendiente', 'Confirmada')
+          AND NEW.fecha_inicio < fecha_fin
+          AND NEW.fecha_fin > fecha_inicio;
+
+        IF (v_solapados + NEW.num_personas) > v_capacidad_max THEN
+            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Capacidad compartida excedida durante el período';
+        END IF;
+    END IF;
+
+    SELECT COALESCE(tm.max_reservas_simultaneas, 1) INTO v_max_simultaneas
+    FROM membresias m
+    JOIN tipos_membresia tm ON m.tipo_id = tm.id
+    WHERE m.usuario_id = NEW.usuario_id
+      AND m.estado = 'Activa'
+      AND NOW() BETWEEN m.fecha_inicio AND m.fecha_fin
+    ORDER BY m.fecha_inicio DESC
+    LIMIT 1;
+
+    SET v_activas = fn_reservas_activas(NEW.usuario_id);
+    IF v_activas >= v_max_simultaneas THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Límite de reservas simultáneas alcanzado';
+    END IF;
+END$$
+
+-- T7. trg_bi_reservas_estado_inicial
+
+DROP TRIGGER IF EXISTS trg_bi_reservas_estado_inicial$$
+CREATE TRIGGER trg_bi_reservas_estado_inicial
+BEFORE INSERT ON reservas
+FOR EACH ROW
+FOLLOWS trg_bi_reservas_validaciones
+BEGIN
+    IF NEW.monto_facturable = 0 THEN
+        SET NEW.estado = 'Confirmada';
+    ELSE
+        SET NEW.estado = 'Pendiente';
+    END IF;
+END$$
+
+-- T8. trg_au_facturas_confirmar_reserva
+
+DROP TRIGGER IF EXISTS trg_au_facturas_confirmar_reserva$$
+CREATE TRIGGER trg_au_facturas_confirmar_reserva
+AFTER UPDATE ON facturas
+FOR EACH ROW
+BEGIN
+    IF OLD.estado <> NEW.estado AND NEW.estado = 'Pagada' AND NEW.tipo = 'Reserva' AND NEW.reserva_id IS NOT NULL THEN
+        UPDATE reservas
+        SET estado = 'Confirmada'
+        WHERE id = NEW.reserva_id AND estado = 'Pendiente';
+    END IF;
+END$$
+
+-- T9. trg_au_membresias_cancelar_reservas_futuras
+
+DROP TRIGGER IF EXISTS trg_au_membresias_cancelar_reservas_futuras$$
+CREATE TRIGGER trg_au_membresias_cancelar_reservas_futuras
+AFTER UPDATE ON membresias
+FOR EACH ROW
+BEGIN
+    IF OLD.estado <> NEW.estado AND NEW.estado = 'Suspendida' THEN
+        UPDATE reservas
+        SET estado = 'Cancelada'
+        WHERE usuario_id = NEW.usuario_id
+          AND estado IN ('Pendiente', 'Confirmada')
+          AND fecha_inicio > NOW();
+    END IF;
+END$$
+
+-- T10. trg_au_reservas_devolver_creditos
+
+DROP TRIGGER IF EXISTS trg_au_reservas_devolver_creditos$$
+CREATE TRIGGER trg_au_reservas_devolver_creditos
+AFTER UPDATE ON reservas
+FOR EACH ROW
+BEGIN
+    DECLARE v_empresa_id INT;
+    DECLARE v_membresia_id INT;
+
+    IF OLD.estado <> NEW.estado AND NEW.estado = 'Cancelada' AND NEW.creditos_usados > 0 THEN
+        SELECT u.empresa_id, m.id INTO v_empresa_id, v_membresia_id
+        FROM usuarios u
+        LEFT JOIN membresias m ON m.usuario_id = u.id AND m.estado = 'Activa'
+        WHERE u.id = NEW.usuario_id
+        ORDER BY m.fecha_inicio DESC
+        LIMIT 1;
+
+        INSERT INTO movimientos_credito (usuario_id, membresia_id, empresa_id, reserva_id, creditos, tipo, fecha)
+        VALUES (NEW.usuario_id, v_membresia_id, v_empresa_id, NEW.id, NEW.creditos_usados, 'Devolucion', NOW());
+
+        INSERT INTO logs_auditoria (accion, tabla_afectada, registro_id, fecha)
+        VALUES ('DEVOLUCION_CREDITOS_RESERVA_CANCELADA', 'reservas', NEW.id, NOW());
+    END IF;
+END$$

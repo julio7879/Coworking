@@ -16,10 +16,9 @@ USE coworking;
 
 DELIMITER $$
 
--- =====================================================================
 -- SECCIÓN 1: FUNCIONES DE MEMBRESÍAS (1 - 5)
 -- Integrante responsables: Julio Ernesto Castaño Palacios (1-4)
--- =====================================================================
+
 
 -- 1. fn_membresia_activa
 

@@ -134,3 +134,145 @@ BEGIN
     END IF;
 END$$
 DELIMITER ;
+
+-- SECCIÓN 2: EVENTOS DE RESERVAS (6 - 10)
+-- Integrante responsable: Sofia Salazar Hernandez
+
+-- 6. evt_horario_cancelar_reservas_pendientes
+
+DROP EVENT IF EXISTS evt_horario_cancelar_reservas_pendientes;
+DELIMITER $$
+CREATE EVENT evt_horario_cancelar_reservas_pendientes
+ON SCHEDULE EVERY 1 HOUR
+DO
+BEGIN
+    CALL sp_liberar_reservas_no_confirmadas(2);
+END$$
+DELIMITER ;
+
+-- 7. evt_horario_recordatorio_reservas
+
+DROP EVENT IF EXISTS evt_horario_recordatorio_reservas;
+DELIMITER $$
+CREATE EVENT evt_horario_recordatorio_reservas
+ON SCHEDULE EVERY 1 HOUR
+DO
+BEGIN
+    INSERT INTO cola_notificaciones (tipo, destinatario, contenido, estado, fecha_creacion)
+    SELECT 
+        'Recordatorio_Reserva',
+        u.email,
+        CONCAT('Hola ', u.nombre, ', recordatorio: su reserva en el espacio "', e.nombre, '" inicia a las ', DATE_FORMAT(r.fecha_inicio, '%H:%i'), '.'),
+        'Pendiente',
+        NOW()
+    FROM reservas r
+    JOIN usuarios u ON r.usuario_id = u.id
+    JOIN espacios e ON r.espacio_id = e.id
+    WHERE r.estado = 'Confirmada'
+      AND r.fecha_inicio BETWEEN NOW() AND DATE_ADD(NOW(), INTERVAL 1 HOUR);
+END$$
+DELIMITER ;
+
+-- 8. evt_diario_completar_reservas
+
+DROP EVENT IF EXISTS evt_diario_completar_reservas;
+DELIMITER $$
+CREATE EVENT evt_diario_completar_reservas
+ON SCHEDULE EVERY 1 DAY
+STARTS (CURRENT_DATE + INTERVAL 23 HOUR + INTERVAL 45 MINUTE)
+DO
+BEGIN
+    UPDATE reservas
+    SET estado = 'Completada'
+    WHERE modalidad = 'Mes'
+      AND estado = 'Confirmada'
+      AND fecha_fin <= NOW();
+
+    UPDATE reservas r
+    SET r.estado = 'Completada'
+    WHERE r.modalidad = 'Hora'
+      AND r.estado = 'Confirmada'
+      AND r.fecha_fin <= NOW()
+      AND EXISTS (
+          SELECT 1 FROM asistencias a
+          WHERE a.reserva_id = r.id AND a.tipo = 'Sala'
+      );
+END$$
+DELIMITER ;
+
+-- 9. evt_semanal_reporte_ocupacion
+
+DROP EVENT IF EXISTS evt_semanal_reporte_ocupacion;
+DELIMITER $$
+CREATE EVENT evt_semanal_reporte_ocupacion
+ON SCHEDULE EVERY 1 WEEK
+STARTS (CURRENT_DATE + INTERVAL 23 HOUR)
+DO
+BEGIN
+    DECLARE v_reporte JSON;
+
+    SELECT JSON_ARRAYAGG(
+        JSON_OBJECT(
+            'espacio', e.nombre,
+            'horas_reservadas', COALESCE(res.horas_res, 0.0),
+            'horas_asistidas', COALESCE(asi.horas_real, 0.0)
+        )
+    ) INTO v_reporte
+    FROM espacios e
+    LEFT JOIN (
+        SELECT espacio_id, SUM(TIMESTAMPDIFF(MINUTE, fecha_inicio, fecha_fin) / 60.0) AS horas_res
+        FROM reservas
+        WHERE estado IN ('Confirmada', 'Completada')
+          AND fecha_inicio >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+        GROUP BY espacio_id
+    ) res ON res.espacio_id = e.id
+    LEFT JOIN (
+        SELECT r.espacio_id, SUM(a.minutos / 60.0) AS horas_real
+        FROM asistencias a
+        JOIN reservas r ON a.reserva_id = r.id
+        WHERE a.tipo = 'Sala'
+          AND a.fecha_entrada >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+        GROUP BY r.espacio_id
+    ) asi ON asi.espacio_id = e.id;
+
+    INSERT INTO reportes_generados (tipo, datos, fecha_generacion)
+    VALUES ('Reporte_Semanal_Ocupacion', COALESCE(v_reporte, JSON_ARRAY()), NOW());
+END$$
+DELIMITER ;
+
+-- 10. evt_15min_marcar_no_show
+
+DROP EVENT IF EXISTS evt_15min_marcar_no_show;
+DELIMITER $$
+CREATE EVENT evt_15min_marcar_no_show
+ON SCHEDULE EVERY 15 MINUTE
+DO
+BEGIN
+    DECLARE v_done INT DEFAULT FALSE;
+    DECLARE v_rid INT;
+    DECLARE cur_noshow CURSOR FOR
+        SELECT r.id
+        FROM reservas r
+        WHERE r.estado = 'Confirmada'
+          AND r.modalidad = 'Hora'
+          AND NOW() >= DATE_ADD(r.fecha_inicio, INTERVAL 15 MINUTE)
+          AND NOT EXISTS (
+              SELECT 1 FROM accesos a
+              WHERE a.reserva_id = r.id
+                AND a.estado_intento = 'Permitido'
+          );
+
+    DECLARE CONTINUE HANDLER FOR NOT FOUND SET v_done = TRUE;
+
+    OPEN cur_noshow;
+    noshow_loop: LOOP
+        FETCH cur_noshow INTO v_rid;
+        IF v_done THEN
+            LEAVE noshow_loop;
+        END IF;
+
+        CALL sp_marcar_no_show_y_penalizar(v_rid);
+    END LOOP;
+    CLOSE cur_noshow;
+END$$
+DELIMITER ;
