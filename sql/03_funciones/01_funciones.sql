@@ -116,3 +116,79 @@ BEGIN
     RETURN COALESCE(v_dias, 0);
 END$$
 
+-- Integrante responsables: Sofia Salazar Hernandez(5-8)
+
+-- 5. fn_renovaciones_membresia
+
+DROP FUNCTION IF EXISTS fn_renovaciones_membresia$$
+CREATE FUNCTION fn_renovaciones_membresia(p_usuario_id INT)
+RETURNS INT
+DETERMINISTIC
+READS SQL DATA
+BEGIN
+    DECLARE v_count INT DEFAULT 0;
+    SELECT GREATEST(COUNT(*) - 1, 0) INTO v_count
+    FROM membresias
+    WHERE usuario_id = p_usuario_id;
+
+    RETURN COALESCE(v_count, 0);
+END$$
+
+
+-- =====================================================================
+-- SECCIÓN 2: FUNCIONES DE RESERVAS (6 - 10)
+-- Integrante responsables: Sofia Salazar Hernandez (5-8)
+-- =====================================================================
+
+-- 6. fn_total_reservas
+
+DROP FUNCTION IF EXISTS fn_total_reservas$$
+CREATE FUNCTION fn_total_reservas(p_usuario_id INT)
+RETURNS INT
+DETERMINISTIC
+READS SQL DATA
+BEGIN
+    DECLARE v_total INT DEFAULT 0;
+    SELECT COUNT(*) INTO v_total
+    FROM reservas
+    WHERE usuario_id = p_usuario_id;
+    RETURN COALESCE(v_total, 0);
+END$$
+
+-- 7. fn_horas_reservadas
+
+DROP FUNCTION IF EXISTS fn_horas_reservadas$$
+CREATE FUNCTION fn_horas_reservadas(p_usuario_id INT, p_mes INT, p_anio INT)
+RETURNS DECIMAL(10,2)
+DETERMINISTIC
+READS SQL DATA
+BEGIN
+    DECLARE v_horas DECIMAL(10,2) DEFAULT 0.00;
+    SELECT COALESCE(SUM(TIMESTAMPDIFF(MINUTE, fecha_inicio, fecha_fin) / 60.0), 0.00)
+    INTO v_horas
+    FROM reservas
+    WHERE usuario_id = p_usuario_id
+      AND MONTH(fecha_inicio) = p_mes
+      AND YEAR(fecha_inicio) = p_anio
+      AND estado <> 'Cancelada';
+    RETURN v_horas;
+END$$
+
+-- 8. fn_espacio_mas_reservado
+
+DROP FUNCTION IF EXISTS fn_espacio_mas_reservado$$
+CREATE FUNCTION fn_espacio_mas_reservado()
+RETURNS INT
+DETERMINISTIC
+READS SQL DATA
+BEGIN
+    DECLARE v_espacio_id INT;
+    SELECT espacio_id INTO v_espacio_id
+    FROM reservas
+    WHERE estado <> 'Cancelada'
+    GROUP BY espacio_id
+    ORDER BY COUNT(*) DESC, espacio_id ASC
+    LIMIT 1;
+    RETURN v_espacio_id;
+END$$
+
