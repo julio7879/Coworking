@@ -392,7 +392,7 @@ BEGIN
     RETURN v_total;
 END$$
 
--- 15. fn_ingresos_por_empresa
+-- 15. fn_ingresos_por_empresa.
 
 DROP FUNCTION IF EXISTS fn_ingresos_por_empresa$$
 CREATE FUNCTION fn_ingresos_por_empresa(p_empresa_id INT)

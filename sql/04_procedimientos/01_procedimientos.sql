@@ -616,7 +616,6 @@ BEGIN
     COMMIT;
 END$$
 
-
 -- 11. sp_generar_factura_consolidada_empresa
 
 DROP PROCEDURE IF EXISTS sp_generar_factura_consolidada_empresa$$
@@ -643,7 +642,6 @@ BEGIN
     FROM tipos_membresia
     WHERE id = 3; -- Corporativa
 
-    -- Total: suma de empleados corporativos activos
     SELECT COUNT(*) * v_precio_corp INTO v_total
     FROM usuarios u
     JOIN membresias m ON m.usuario_id = u.id AND m.tipo_id = 3 AND m.estado = 'Activa'
@@ -659,7 +657,6 @@ BEGIN
 
         SET p_factura_id = LAST_INSERT_ID();
 
-        -- Detalle por empleado
         INSERT INTO factura_detalle (factura_id, concepto, referencia_tipo, referencia_id, monto)
         SELECT 
             p_factura_id,
@@ -674,7 +671,6 @@ BEGIN
 
     COMMIT;
 END$$
-
 
 -- 12. sp_aplicar_recargos_facturas_vencidas
 
@@ -741,6 +737,177 @@ BEGIN
     VALUES (p_factura_id, p_monto, NOW(), p_metodo_pago_id, p_referencia, 'Aplicado');
 
     SET p_pago_id = LAST_INSERT_ID();
+
+    COMMIT;
+END$$
+
+
+-- SECCIÓN 4: PROCEDIMIENTOS DE ACCESOS Y ASISTENCIAS (14 - 17)
+-- Integrante Responsable: Zlatan Ricardo Villamizar 
+
+-- 14. sp_registrar_acceso
+
+DROP PROCEDURE IF EXISTS sp_registrar_acceso$$
+CREATE PROCEDURE sp_registrar_acceso(
+    IN  p_usuario_id INT,
+    IN  p_metodo     VARCHAR(10),
+    IN  p_reserva_id INT,
+    OUT p_acceso_id  BIGINT,
+    OUT p_resultado  VARCHAR(20)
+)
+BEGIN
+    DECLARE v_fecha_entrada DATETIME;
+    DECLARE v_tipo_sesion VARCHAR(10);
+    DECLARE v_acceso_previo_id BIGINT;
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        RESIGNAL;
+    END;
+
+    START TRANSACTION;
+
+    SET v_fecha_entrada = NOW();
+
+    INSERT INTO accesos (usuario_id, reserva_id, fecha_hora_entrada, metodo_acceso, estado_intento)
+    VALUES (p_usuario_id, p_reserva_id, v_fecha_entrada, p_metodo, 'Rechazado');
+
+    SET p_acceso_id = LAST_INSERT_ID();
+
+    SELECT estado_intento INTO p_resultado
+    FROM accesos
+    WHERE id = p_acceso_id;
+
+    IF p_resultado = 'Permitido' THEN
+        SET v_tipo_sesion = IF(p_reserva_id IS NOT NULL, 'Sala', 'Edificio');
+
+        SELECT a.id INTO v_acceso_previo_id
+        FROM accesos a
+        JOIN asistencias asi ON asi.acceso_id = a.id
+        WHERE a.usuario_id = p_usuario_id
+          AND a.id <> p_acceso_id
+          AND asi.tipo = v_tipo_sesion
+          AND a.fecha_hora_salida IS NULL
+        ORDER BY a.fecha_hora_entrada DESC
+        LIMIT 1;
+
+        IF v_acceso_previo_id IS NOT NULL THEN
+            UPDATE accesos
+            SET fecha_hora_salida = DATE_SUB(v_fecha_entrada, INTERVAL 1 MINUTE)
+            WHERE id = v_acceso_previo_id;
+        END IF;
+    END IF;
+
+    COMMIT;
+END$$
+
+-- 15. sp_registrar_salida
+
+DROP PROCEDURE IF EXISTS sp_registrar_salida$$
+CREATE PROCEDURE sp_registrar_salida(IN p_usuario_id INT)
+BEGIN
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        RESIGNAL;
+    END;
+
+    START TRANSACTION;
+
+    UPDATE accesos
+    SET fecha_hora_salida = NOW()
+    WHERE usuario_id = p_usuario_id
+      AND estado_intento = 'Permitido'
+      AND fecha_hora_salida IS NULL;
+
+    COMMIT;
+END$$
+
+-- 16. sp_generar_reporte_diario_asistencias
+
+DROP PROCEDURE IF EXISTS sp_generar_reporte_diario_asistencias$$
+CREATE PROCEDURE sp_generar_reporte_diario_asistencias(IN p_fecha DATE)
+BEGIN
+    DECLARE v_reporte_json JSON;
+
+    SELECT JSON_OBJECT(
+        'fecha', p_fecha,
+        'total_accesos', COUNT(*),
+        'permitidos', SUM(CASE WHEN estado_intento = 'Permitido' THEN 1 ELSE 0 END),
+        'rechazados', SUM(CASE WHEN estado_intento = 'Rechazado' THEN 1 ELSE 0 END),
+        'asistencias_edificio', (
+            SELECT COUNT(*) FROM asistencias 
+            WHERE tipo = 'Edificio' AND DATE(fecha_entrada) = p_fecha
+        ),
+        'asistencias_sala', (
+            SELECT COUNT(*) FROM asistencias 
+            WHERE tipo = 'Sala' AND DATE(fecha_entrada) = p_fecha
+        )
+    ) INTO v_reporte_json
+    FROM accesos
+    WHERE DATE(fecha_hora_entrada) = p_fecha;
+
+    INSERT INTO reportes_generados (tipo, datos, fecha_generacion)
+    VALUES ('Reporte_Diario_Asistencias', v_reporte_json, NOW());
+END$$
+
+-- 17. sp_marcar_no_show_y_penalizar
+
+DROP PROCEDURE IF EXISTS sp_marcar_no_show_y_penalizar$$
+CREATE PROCEDURE sp_marcar_no_show_y_penalizar(IN p_reserva_id INT)
+BEGIN
+    DECLARE v_costo_total DECIMAL(12,2);
+    DECLARE v_usuario_id INT;
+    DECLARE v_porc_pen DECIMAL(5,2) DEFAULT 0.50;
+    DECLARE v_penalizacion DECIMAL(12,2);
+    DECLARE v_pagado DECIMAL(12,2) DEFAULT 0.00;
+    DECLARE v_factura_id INT;
+    DECLARE v_diferencia DECIMAL(12,2);
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        RESIGNAL;
+    END;
+
+    START TRANSACTION;
+
+    SELECT CAST(COALESCE(MAX(valor), '0.5') AS DECIMAL(5,2)) INTO v_porc_pen
+    FROM configuracion_sistema WHERE clave = 'penalizacion_no_show';
+
+    SELECT costo_total, usuario_id INTO v_costo_total, v_usuario_id
+    FROM reservas
+    WHERE id = p_reserva_id;
+
+    SET v_penalizacion = v_costo_total * v_porc_pen;
+
+    SELECT COALESCE(SUM(p.monto), 0.00) INTO v_pagado
+    FROM pagos p
+    JOIN facturas f ON p.factura_id = f.id
+    WHERE f.reserva_id = p_reserva_id AND p.estado = 'Aplicado';
+    
+    UPDATE reservas
+    SET estado = 'No_Show'
+    WHERE id = p_reserva_id;
+
+    IF v_pagado < v_penalizacion THEN
+        SET v_diferencia = v_penalizacion - v_pagado;
+        INSERT INTO facturas (usuario_id, reserva_id, tipo, monto_base, recargo_acumulado, saldo_pendiente, estado, fecha_emision, fecha_vencimiento)
+        VALUES (v_usuario_id, p_reserva_id, 'Penalizacion', v_diferencia, 0.00, v_diferencia, 'Pendiente', CURRENT_DATE, DATE_ADD(CURRENT_DATE, INTERVAL 15 DAY));
+
+        INSERT INTO factura_detalle (factura_id, concepto, referencia_tipo, referencia_id, monto)
+        VALUES (LAST_INSERT_ID(), CONCAT('Penalización por No Show en Reserva ID ', p_reserva_id), 'Reserva', p_reserva_id, v_diferencia);
+    ELSEIF v_pagado > v_penalizacion THEN
+        -- Reembolsar el exceso como pago negativo
+        SET v_diferencia = v_pagado - v_penalizacion;
+        SELECT id INTO v_factura_id FROM facturas WHERE reserva_id = p_reserva_id LIMIT 1;
+
+        IF v_factura_id IS NOT NULL THEN
+            INSERT INTO pagos (factura_id, monto, metodo_pago_id, referencia, estado)
+            VALUES (v_factura_id, -v_diferencia, 1, CONCAT('Reembolso por exceso tras penalización No Show reserva ', p_reserva_id), 'Aplicado');
+        END IF;
+    END IF;
 
     COMMIT;
 END$$

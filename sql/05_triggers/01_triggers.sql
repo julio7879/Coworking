@@ -387,9 +387,6 @@ BEGIN
 END$$
 
 -- SECCIÓN 3: TRIGGERS DE PAGOS Y FACTURACIÓN 
--- Integrante responsable: Valeria Lizcano Arena
-
--- T11. trg_bi_servicios_contratados_validar_mora
 
 DROP TRIGGER IF EXISTS trg_bi_servicios_contratados_validar_mora$$
 CREATE TRIGGER trg_bi_servicios_contratados_validar_mora
@@ -407,7 +404,6 @@ BEGIN
         SET MESSAGE_TEXT = 'No se pueden contratar servicios adicionales: el usuario presenta facturas vencidas en mora';
     END IF;
 END$$
-
 
 -- T12. trg_ai_pagos_actualizar_saldo
 
@@ -445,9 +441,7 @@ BEGIN
     WHERE id = NEW.factura_id;
 END$$
 
-
 -- T13. trg_bd_facturas_validar_eliminacion
-
 
 DROP TRIGGER IF EXISTS trg_bd_facturas_validar_eliminacion$$
 CREATE TRIGGER trg_bd_facturas_validar_eliminacion
@@ -465,7 +459,6 @@ BEGIN
         SET MESSAGE_TEXT = 'No se puede eliminar la factura: existen pagos registrados asociados';
     END IF;
 END$$
-
 
 -- T14. trg_bi_pagos_validar_monto_y_estado
 
@@ -501,7 +494,6 @@ BEGIN
         END IF;
     END IF;
 END$$
-
 
 -- T15. trg_au_pagos_recalcular_saldo
 
@@ -539,14 +531,6 @@ END$$
 -- SECCIÓN 4: TRIGGERS DE ACCESOS Y ASISTENCIAS (T16 - T20)
 -- Integrante Responsable: Zlatan Ricardo Villamizar 
 
-
--- T16. trg_bi_accesos_validar_ingreso
--- BEFORE INSERT en accesos:
---   - Evalúa si el intento es 'Permitido' o 'Rechazado' (Regla 14, 16 y horario).
---   - Edificio: requiere membresía activa o reserva Confirmada en ventana
---     (-10 min a fecha_fin) dentro del horario general.
---   - Sala: requiere reserva Confirmada del usuario en ventana.
-
 DROP TRIGGER IF EXISTS trg_bi_accesos_validar_ingreso$$
 CREATE TRIGGER trg_bi_accesos_validar_ingreso
 BEFORE INSERT ON accesos
@@ -562,7 +546,6 @@ BEGIN
     SET v_dia_semana = DAYOFWEEK(NEW.fecha_hora_entrada);
     SET v_hora_actual = TIME(NEW.fecha_hora_entrada);
 
-    -- Horario general del edificio
     SELECT hora_apertura, hora_cierre INTO v_apertura, v_cierre
     FROM horarios_disponibilidad
     WHERE espacio_id IS NULL AND dia_semana = v_dia_semana;
@@ -575,7 +558,6 @@ BEGIN
             -- Acceso a Edificio
             SET v_tiene_membresia = fn_membresia_activa(NEW.usuario_id);
 
-            -- O reserva Confirmada dentro de la ventana (-10 min a fin)
             SELECT EXISTS (
                 SELECT 1 FROM reservas
                 WHERE usuario_id = NEW.usuario_id
@@ -591,7 +573,7 @@ BEGIN
                 SET NEW.motivo_rechazo = 'Sin membresía activa ni reserva confirmada en curso';
             END IF;
         ELSE
-            -- Acceso a Sala específica
+
             SELECT EXISTS (
                 SELECT 1 FROM reservas
                 WHERE id = NEW.reserva_id
@@ -611,11 +593,7 @@ BEGIN
     END IF;
 END$$
 
-
 -- T17. trg_ai_accesos_registrar_asistencia
--- AFTER INSERT en accesos:
---   - Si quedó 'Permitido', inserta automáticamente en asistencias
---     (tipo 'Sala' si reserva_id NOT NULL, si no 'Edificio').
 
 DROP TRIGGER IF EXISTS trg_ai_accesos_registrar_asistencia$$
 CREATE TRIGGER trg_ai_accesos_registrar_asistencia
@@ -636,10 +614,7 @@ BEGIN
     END IF;
 END$$
 
-
 -- T18. trg_ai_accesos_actualizar_ultimo_acceso
--- AFTER INSERT en accesos:
---   - Si quedó 'Permitido', actualiza usuarios.ultimo_acceso.
 
 DROP TRIGGER IF EXISTS trg_ai_accesos_actualizar_ultimo_acceso$$
 CREATE TRIGGER trg_ai_accesos_actualizar_ultimo_acceso
@@ -655,9 +630,6 @@ END$$
 
 
 -- T19. trg_au_accesos_cerrar_asistencia
--- AFTER UPDATE en accesos:
---   - Al registrar fecha_hora_salida, completa asistencias.fecha_salida
---     y calcula los minutos de permanencia real.
 
 DROP TRIGGER IF EXISTS trg_au_accesos_cerrar_asistencia$$
 CREATE TRIGGER trg_au_accesos_cerrar_asistencia
@@ -672,10 +644,7 @@ BEGIN
     END IF;
 END$$
 
-
 -- T20. trg_ai_accesos_auditar_rechazados
--- AFTER INSERT en accesos:
---   - Si el intento fue 'Rechazado', audita en logs_auditoria.
 
 DROP TRIGGER IF EXISTS trg_ai_accesos_auditar_rechazados$$
 CREATE TRIGGER trg_ai_accesos_auditar_rechazados
