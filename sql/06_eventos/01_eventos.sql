@@ -7,17 +7,14 @@ Descripción:
 
 Requisitos:
 Ejecutar previamente 01_estructura.sql, 01_datos_iniciales.sql, 01_funciones.sql, 01_procedimientos.sql y 01_triggers.sql.
-Requiere activar el scheduler: SET GLOBAL event_scheduler = ON;
 */
 
 USE coworking;
 
 SET GLOBAL event_scheduler = ON;
 
--- =====================================================================
 -- SECCIÓN 1: EVENTOS DE MEMBRESÍAS (1 - 5)
 -- Integrante Responsable: Julio Ernesto Castaño Palacios
--- =====================================================================
 
 -- 1. evt_diario_vencer_membresias
 
@@ -136,6 +133,7 @@ END$$
 DELIMITER ;
 
 -- SECCIÓN 2: EVENTOS DE RESERVAS (6 - 10)
+
 -- Integrante responsable: Sofia Salazar Hernandez
 
 -- 6. evt_horario_cancelar_reservas_pendientes
@@ -357,7 +355,6 @@ BEGIN
             LEAVE emp_loop;
         END IF;
 
-        -- 1. Renovar membresías activas de sus empleados al nuevo mes
         UPDATE membresias m
         JOIN usuarios u ON m.usuario_id = u.id
         SET m.fecha_inicio = NOW(),
@@ -368,10 +365,8 @@ BEGIN
           AND m.tipo_id = 3
           AND u.activo = TRUE;
 
-        -- 2. Emitir factura consolidada única
         CALL sp_generar_factura_consolidada_empresa(v_empresa_id, MONTH(NOW()), YEAR(NOW()), v_fid);
 
-        -- 3. Reinicio del pool de créditos corporativos en movimientos_credito
         IF v_cred_pool > 0 THEN
             INSERT INTO movimientos_credito (empresa_id, creditos, tipo, fecha)
             VALUES (v_empresa_id, v_cred_pool, 'Reinicio', NOW());
@@ -409,11 +404,8 @@ BEGIN
 END$$
 DELIMITER ;
 
--- =====================================================================
 -- SECCIÓN 4: EVENTOS DE ACCESOS Y SEGURIDAD (16 - 20)
 -- Integrante Responsable: Brenda Nico Carrillo Gonzalez
--- =====================================================================
-
 
 -- 16. evt_15min_auto_checkout_cierre
 
@@ -437,7 +429,6 @@ BEGIN
 END$$
 DELIMITER ;
 
--- 17. evt_diario_reporte_asistencias
 
 DROP EVENT IF EXISTS evt_diario_reporte_asistencias;
 DELIMITER $$
@@ -451,7 +442,6 @@ END$$
 DELIMITER ;
 
 -- 18. evt_semanal_usuarios_inactivos
-
 
 DROP EVENT IF EXISTS evt_semanal_usuarios_inactivos;
 DELIMITER $$
@@ -551,7 +541,6 @@ BEGIN
     INSERT INTO reportes_generados (tipo, datos, fecha_generacion)
     VALUES ('Ranking_Mensual_Top10_Frecuentes', COALESCE(v_ranking, JSON_ARRAY()), NOW());
 
-    -- Depuración de cola_notificaciones de más de 90 días (accesos NO se tocan)
     DELETE FROM cola_notificaciones
     WHERE estado = 'Enviada'
       AND fecha_creacion < DATE_SUB(NOW(), INTERVAL 90 DAY);

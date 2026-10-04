@@ -954,7 +954,6 @@ BEGIN
 
         SET v_uid = LAST_INSERT_ID();
 
-        -- Membresía corporativa inicia hoy y vence fin de mes
         CALL sp_registrar_membresia(v_uid, 3, NOW(), v_mid);
 
         SET i = i + 1;
