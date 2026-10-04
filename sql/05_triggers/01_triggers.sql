@@ -535,3 +535,157 @@ BEGIN
         VALUES ('PAGO_CANCELADO_RECALCULO_SALDO', 'pagos', NEW.id, NOW());
     END IF;
 END$$
+
+-- SECCIÓN 4: TRIGGERS DE ACCESOS Y ASISTENCIAS (T16 - T20)
+-- Integrante Responsable: Zlatan Ricardo Villamizar 
+
+
+-- T16. trg_bi_accesos_validar_ingreso
+-- BEFORE INSERT en accesos:
+--   - Evalúa si el intento es 'Permitido' o 'Rechazado' (Regla 14, 16 y horario).
+--   - Edificio: requiere membresía activa o reserva Confirmada en ventana
+--     (-10 min a fecha_fin) dentro del horario general.
+--   - Sala: requiere reserva Confirmada del usuario en ventana.
+
+DROP TRIGGER IF EXISTS trg_bi_accesos_validar_ingreso$$
+CREATE TRIGGER trg_bi_accesos_validar_ingreso
+BEFORE INSERT ON accesos
+FOR EACH ROW
+BEGIN
+    DECLARE v_apertura TIME;
+    DECLARE v_cierre TIME;
+    DECLARE v_hora_actual TIME;
+    DECLARE v_dia_semana TINYINT;
+    DECLARE v_tiene_membresia BOOLEAN;
+    DECLARE v_reserva_valida BOOLEAN DEFAULT FALSE;
+
+    SET v_dia_semana = DAYOFWEEK(NEW.fecha_hora_entrada);
+    SET v_hora_actual = TIME(NEW.fecha_hora_entrada);
+
+    -- Horario general del edificio
+    SELECT hora_apertura, hora_cierre INTO v_apertura, v_cierre
+    FROM horarios_disponibilidad
+    WHERE espacio_id IS NULL AND dia_semana = v_dia_semana;
+
+    IF v_apertura IS NOT NULL AND (v_hora_actual < v_apertura OR v_hora_actual > v_cierre) THEN
+        SET NEW.estado_intento = 'Rechazado';
+        SET NEW.motivo_rechazo = 'Intento de acceso fuera del horario general del coworking';
+    ELSE
+        IF NEW.reserva_id IS NULL THEN
+            -- Acceso a Edificio
+            SET v_tiene_membresia = fn_membresia_activa(NEW.usuario_id);
+
+            -- O reserva Confirmada dentro de la ventana (-10 min a fin)
+            SELECT EXISTS (
+                SELECT 1 FROM reservas
+                WHERE usuario_id = NEW.usuario_id
+                  AND estado = 'Confirmada'
+                  AND NEW.fecha_hora_entrada BETWEEN DATE_SUB(fecha_inicio, INTERVAL 10 MINUTE) AND fecha_fin
+            ) INTO v_reserva_valida;
+
+            IF v_tiene_membresia OR v_reserva_valida THEN
+                SET NEW.estado_intento = 'Permitido';
+                SET NEW.motivo_rechazo = NULL;
+            ELSE
+                SET NEW.estado_intento = 'Rechazado';
+                SET NEW.motivo_rechazo = 'Sin membresía activa ni reserva confirmada en curso';
+            END IF;
+        ELSE
+            -- Acceso a Sala específica
+            SELECT EXISTS (
+                SELECT 1 FROM reservas
+                WHERE id = NEW.reserva_id
+                  AND usuario_id = NEW.usuario_id
+                  AND estado = 'Confirmada'
+                  AND NEW.fecha_hora_entrada BETWEEN DATE_SUB(fecha_inicio, INTERVAL 10 MINUTE) AND fecha_fin
+            ) INTO v_reserva_valida;
+
+            IF v_reserva_valida THEN
+                SET NEW.estado_intento = 'Permitido';
+                SET NEW.motivo_rechazo = NULL;
+            ELSE
+                SET NEW.estado_intento = 'Rechazado';
+                SET NEW.motivo_rechazo = 'Reserva de sala no válida o fuera de la ventana de tiempo';
+            END IF;
+        END IF;
+    END IF;
+END$$
+
+
+-- T17. trg_ai_accesos_registrar_asistencia
+-- AFTER INSERT en accesos:
+--   - Si quedó 'Permitido', inserta automáticamente en asistencias
+--     (tipo 'Sala' si reserva_id NOT NULL, si no 'Edificio').
+
+DROP TRIGGER IF EXISTS trg_ai_accesos_registrar_asistencia$$
+CREATE TRIGGER trg_ai_accesos_registrar_asistencia
+AFTER INSERT ON accesos
+FOR EACH ROW
+BEGIN
+    IF NEW.estado_intento = 'Permitido' THEN
+        INSERT INTO asistencias (acceso_id, usuario_id, reserva_id, tipo, fecha_entrada, fecha_salida, minutos)
+        VALUES (
+            NEW.id,
+            NEW.usuario_id,
+            NEW.reserva_id,
+            IF(NEW.reserva_id IS NOT NULL, 'Sala', 'Edificio'),
+            NEW.fecha_hora_entrada,
+            NEW.fecha_hora_salida,
+            IF(NEW.fecha_hora_salida IS NOT NULL, TIMESTAMPDIFF(MINUTE, NEW.fecha_hora_entrada, NEW.fecha_hora_salida), NULL)
+        );
+    END IF;
+END$$
+
+
+-- T18. trg_ai_accesos_actualizar_ultimo_acceso
+-- AFTER INSERT en accesos:
+--   - Si quedó 'Permitido', actualiza usuarios.ultimo_acceso.
+
+DROP TRIGGER IF EXISTS trg_ai_accesos_actualizar_ultimo_acceso$$
+CREATE TRIGGER trg_ai_accesos_actualizar_ultimo_acceso
+AFTER INSERT ON accesos
+FOR EACH ROW
+BEGIN
+    IF NEW.estado_intento = 'Permitido' THEN
+        UPDATE usuarios
+        SET ultimo_acceso = NEW.fecha_hora_entrada
+        WHERE id = NEW.usuario_id;
+    END IF;
+END$$
+
+
+-- T19. trg_au_accesos_cerrar_asistencia
+-- AFTER UPDATE en accesos:
+--   - Al registrar fecha_hora_salida, completa asistencias.fecha_salida
+--     y calcula los minutos de permanencia real.
+
+DROP TRIGGER IF EXISTS trg_au_accesos_cerrar_asistencia$$
+CREATE TRIGGER trg_au_accesos_cerrar_asistencia
+AFTER UPDATE ON accesos
+FOR EACH ROW
+BEGIN
+    IF OLD.fecha_hora_salida IS NULL AND NEW.fecha_hora_salida IS NOT NULL THEN
+        UPDATE asistencias
+        SET fecha_salida = NEW.fecha_hora_salida,
+            minutos = TIMESTAMPDIFF(MINUTE, fecha_entrada, NEW.fecha_hora_salida)
+        WHERE acceso_id = NEW.id;
+    END IF;
+END$$
+
+
+-- T20. trg_ai_accesos_auditar_rechazados
+-- AFTER INSERT en accesos:
+--   - Si el intento fue 'Rechazado', audita en logs_auditoria.
+
+DROP TRIGGER IF EXISTS trg_ai_accesos_auditar_rechazados$$
+CREATE TRIGGER trg_ai_accesos_auditar_rechazados
+AFTER INSERT ON accesos
+FOR EACH ROW
+BEGIN
+    IF NEW.estado_intento = 'Rechazado' THEN
+        INSERT INTO logs_auditoria (accion, tabla_afectada, registro_id, fecha)
+        VALUES (CONCAT('INTENTO_ACCESO_RECHAZADO: ', COALESCE(NEW.motivo_rechazo, 'Sin motivo')), 'accesos', NEW.id, NOW());
+    END IF;
+END$$
+
+DELIMITER ;
