@@ -574,3 +574,173 @@ BEGIN
 
     COMMIT;
 END$$
+
+-- SECCIÓN 3: PROCEDIMIENTOS DE PAGOS Y FACTURACIÓN (10 - 13)
+-- Integrante responsable: Valeria Lizcano Arena
+
+
+-- 10. sp_generar_factura_por_consumo
+
+DROP PROCEDURE IF EXISTS sp_generar_factura_por_consumo$$
+CREATE PROCEDURE sp_generar_factura_por_consumo(
+    IN  p_tipo            VARCHAR(20),
+    IN  p_usuario_id      INT,
+    IN  p_monto           DECIMAL(12,2),
+    IN  p_concepto        VARCHAR(200),
+    IN  p_referencia_tipo VARCHAR(30),
+    IN  p_referencia_id   INT,
+    OUT p_factura_id      INT
+)
+BEGIN
+    DECLARE v_dias_venc INT DEFAULT 15;
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        RESIGNAL;
+    END;
+
+    START TRANSACTION;
+
+    SELECT CAST(COALESCE(MAX(valor), '15') AS UNSIGNED) INTO v_dias_venc
+    FROM configuracion_sistema WHERE clave = 'dias_vencimiento_factura';
+
+    INSERT INTO facturas (usuario_id, tipo, monto_base, recargo_acumulado, saldo_pendiente, estado, fecha_emision, fecha_vencimiento)
+    VALUES (p_usuario_id, p_tipo, p_monto, 0.00, p_monto, 'Pendiente', CURRENT_DATE, DATE_ADD(CURRENT_DATE, INTERVAL v_dias_venc DAY));
+
+    SET p_factura_id = LAST_INSERT_ID();
+
+    INSERT INTO factura_detalle (factura_id, concepto, referencia_tipo, referencia_id, monto)
+    VALUES (p_factura_id, p_concepto, p_referencia_tipo, p_referencia_id, p_monto);
+
+    COMMIT;
+END$$
+
+
+-- 11. sp_generar_factura_consolidada_empresa
+
+DROP PROCEDURE IF EXISTS sp_generar_factura_consolidada_empresa$$
+CREATE PROCEDURE sp_generar_factura_consolidada_empresa(
+    IN  p_empresa_id   INT,
+    IN  p_mes          INT,
+    IN  p_anio         INT,
+    OUT p_factura_id   INT
+)
+BEGIN
+    DECLARE v_total DECIMAL(12,2) DEFAULT 0.00;
+    DECLARE v_precio_corp DECIMAL(12,2);
+    DECLARE v_dias_venc INT DEFAULT 15;
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        RESIGNAL;
+    END;
+
+    START TRANSACTION;
+
+    SELECT precio INTO v_precio_corp
+    FROM tipos_membresia
+    WHERE id = 3; -- Corporativa
+
+    -- Total: suma de empleados corporativos activos
+    SELECT COUNT(*) * v_precio_corp INTO v_total
+    FROM usuarios u
+    JOIN membresias m ON m.usuario_id = u.id AND m.tipo_id = 3 AND m.estado = 'Activa'
+    WHERE u.empresa_id = p_empresa_id
+      AND u.activo = TRUE;
+
+    IF v_total > 0 THEN
+        SELECT CAST(COALESCE(MAX(valor), '15') AS UNSIGNED) INTO v_dias_venc
+        FROM configuracion_sistema WHERE clave = 'dias_vencimiento_factura';
+
+        INSERT INTO facturas (empresa_id, usuario_id, tipo, monto_base, recargo_acumulado, saldo_pendiente, estado, fecha_emision, fecha_vencimiento)
+        VALUES (p_empresa_id, NULL, 'Consolidada', v_total, 0.00, v_total, 'Pendiente', CURRENT_DATE, DATE_ADD(CURRENT_DATE, INTERVAL v_dias_venc DAY));
+
+        SET p_factura_id = LAST_INSERT_ID();
+
+        -- Detalle por empleado
+        INSERT INTO factura_detalle (factura_id, concepto, referencia_tipo, referencia_id, monto)
+        SELECT 
+            p_factura_id,
+            CONCAT('Membresía Corporativa Mes ', p_mes, '/', p_anio, ' - ', u.nombre, ' ', u.apellidos),
+            'Membresia',
+            m.id,
+            v_precio_corp
+        FROM usuarios u
+        JOIN membresias m ON m.usuario_id = u.id AND m.tipo_id = 3 AND m.estado = 'Activa'
+        WHERE u.empresa_id = p_empresa_id AND u.activo = TRUE;
+    END IF;
+
+    COMMIT;
+END$$
+
+
+-- 12. sp_aplicar_recargos_facturas_vencidas
+
+DROP PROCEDURE IF EXISTS sp_aplicar_recargos_facturas_vencidas$$
+CREATE PROCEDURE sp_aplicar_recargos_facturas_vencidas()
+BEGIN
+    DECLARE v_porc_diario DECIMAL(5,2) DEFAULT 0.50;
+    DECLARE v_dias_recargo INT DEFAULT 16;
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        RESIGNAL;
+    END;
+
+    START TRANSACTION;
+
+    SELECT CAST(COALESCE(MAX(valor), '0.5') AS DECIMAL(5,2)) INTO v_porc_diario
+    FROM configuracion_sistema WHERE clave = 'porcentaje_mora_diaria';
+
+    SELECT CAST(COALESCE(MAX(valor), '16') AS UNSIGNED) INTO v_dias_recargo
+    FROM configuracion_sistema WHERE clave = 'dias_recargo';
+
+    -- Aplica solo si no se ha aplicado hoy 
+    UPDATE facturas f
+    LEFT JOIN (
+        SELECT factura_id, COALESCE(SUM(monto), 0.00) AS total_pagado
+        FROM pagos
+        WHERE estado = 'Aplicado' AND monto > 0
+        GROUP BY factura_id
+    ) p ON p.factura_id = f.id
+    SET 
+        f.recargo_acumulado = f.recargo_acumulado + ((v_porc_diario / 100.0) * (f.monto_base - COALESCE(p.total_pagado, 0.00))),
+        f.ultimo_recargo = CURRENT_DATE,
+        f.saldo_pendiente = (f.monto_base + f.recargo_acumulado + ((v_porc_diario / 100.0) * (f.monto_base - COALESCE(p.total_pagado, 0.00)))) - COALESCE(p.total_pagado, 0.00)
+    WHERE f.saldo_pendiente > 0
+      AND f.estado = 'Pendiente'
+      AND DATEDIFF(CURRENT_DATE, f.fecha_vencimiento) >= v_dias_recargo
+      AND (f.ultimo_recargo IS NULL OR f.ultimo_recargo < CURRENT_DATE);
+
+    COMMIT;
+END$$
+
+-- 13. sp_registrar_pago
+
+DROP PROCEDURE IF EXISTS sp_registrar_pago$$
+CREATE PROCEDURE sp_registrar_pago(
+    IN  p_factura_id     INT,
+    IN  p_monto          DECIMAL(12,2),
+    IN  p_metodo_pago_id INT,
+    IN  p_referencia     VARCHAR(100),
+    OUT p_pago_id        INT
+)
+BEGIN
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        RESIGNAL;
+    END;
+
+    START TRANSACTION;
+
+    INSERT INTO pagos (factura_id, monto, fecha_pago, metodo_pago_id, referencia, estado)
+    VALUES (p_factura_id, p_monto, NOW(), p_metodo_pago_id, p_referencia, 'Aplicado');
+
+    SET p_pago_id = LAST_INSERT_ID();
+
+    COMMIT;
+END$$

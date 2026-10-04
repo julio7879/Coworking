@@ -134,10 +134,10 @@ BEGIN
 END$$
 
 
--- =====================================================================
+
 -- SECCIÓN 2: FUNCIONES DE RESERVAS (6 - 10)
 -- Integrante responsables: Sofia Salazar Hernandez (5-8)
--- =====================================================================
+
 
 -- 6. fn_total_reservas
 
@@ -191,3 +191,77 @@ BEGIN
     RETURN v_espacio_id;
 END$$
 
+-- Integrante responsable: Valeria Lizcano Arena 
+
+
+-- 9. fn_reservas_activas
+
+DROP FUNCTION IF EXISTS fn_reservas_activas$$
+CREATE FUNCTION fn_reservas_activas(p_usuario_id INT)
+RETURNS INT
+DETERMINISTIC
+READS SQL DATA
+BEGIN
+    DECLARE v_activas INT DEFAULT 0;
+    SELECT COUNT(*) INTO v_activas
+    FROM reservas
+    WHERE usuario_id = p_usuario_id
+      AND estado IN ('Pendiente', 'Confirmada')
+      AND fecha_fin > NOW();
+    RETURN COALESCE(v_activas, 0);
+END$$
+
+-- 10. fn_duracion_promedio_reservas
+
+_duracion_promedio_reservas$$
+CREATE FUNCTION fn_duracion_promedio_reservas(p_espacio_id INT)
+RETURNS DECIMAL(10,2)
+DETERMINISTIC
+READS SQL DATA
+BEGIN
+    DECLARE v_prom DECIMAL(10,2) DEFAULT 0.00;
+    SELECT COALESCE(AVG(TIMESTAMPDIFF(MINUTE, fecha_inicio, fecha_fin) / 60.0), 0.00)
+    INTO v_prom
+    FROM reservas
+    WHERE espacio_id = p_espacio_id
+      AND estado <> 'Cancelada';
+    RETURN v_prom;
+END$$
+
+
+-- SECCIÓN 3: FUNCIONES DE PAGOS Y FACTURACIÓN (11 - 15)
+-- Integrante responsable: Valeria Lizcano Arena
+
+-- 11. fn_total_pagado
+
+DROP FUNCTION IF EXISTS fn_total_pagado$$
+CREATE FUNCTION fn_total_pagado(p_usuario_id INT)
+RETURNS DECIMAL(12,2)
+DETERMINISTIC
+READS SQL DATA
+BEGIN
+    DECLARE v_total DECIMAL(12,2) DEFAULT 0.00;
+    SELECT COALESCE(SUM(p.monto), 0.00) INTO v_total
+    FROM pagos p
+    JOIN facturas f ON p.factura_id = f.id
+    WHERE f.usuario_id = p_usuario_id
+      AND p.estado = 'Aplicado';
+    RETURN v_total;
+END$$
+
+-- 12. fn_ingresos_por_mes
+
+DROP FUNCTION IF EXISTS fn_ingresos_por_mes$$
+CREATE FUNCTION fn_ingresos_por_mes(p_mes INT, p_anio INT)
+RETURNS DECIMAL(12,2)
+DETERMINISTIC
+READS SQL DATA
+BEGIN
+    DECLARE v_ingresos DECIMAL(12,2) DEFAULT 0.00;
+    SELECT COALESCE(SUM(monto), 0.00) INTO v_ingresos
+    FROM pagos
+    WHERE estado = 'Aplicado'
+      AND MONTH(fecha_pago) = p_mes
+      AND YEAR(fecha_pago) = p_anio;
+    RETURN v_ingresos;
+END$$

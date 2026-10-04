@@ -385,3 +385,153 @@ BEGIN
         VALUES ('DEVOLUCION_CREDITOS_RESERVA_CANCELADA', 'reservas', NEW.id, NOW());
     END IF;
 END$$
+
+-- SECCIÓN 3: TRIGGERS DE PAGOS Y FACTURACIÓN 
+-- Integrante responsable: Valeria Lizcano Arena
+
+-- T11. trg_bi_servicios_contratados_validar_mora
+
+DROP TRIGGER IF EXISTS trg_bi_servicios_contratados_validar_mora$$
+CREATE TRIGGER trg_bi_servicios_contratados_validar_mora
+BEFORE INSERT ON servicios_contratados
+FOR EACH ROW
+BEGIN
+    DECLARE v_bloqueado BOOLEAN DEFAULT FALSE;
+
+    SELECT EXISTS (
+        SELECT 1 FROM v_usuarios_bloqueados WHERE usuario_id = NEW.usuario_id
+    ) INTO v_bloqueado;
+
+    IF v_bloqueado THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'No se pueden contratar servicios adicionales: el usuario presenta facturas vencidas en mora';
+    END IF;
+END$$
+
+
+-- T12. trg_ai_pagos_actualizar_saldo
+
+DROP TRIGGER IF EXISTS trg_ai_pagos_actualizar_saldo$$
+CREATE TRIGGER trg_ai_pagos_actualizar_saldo
+AFTER INSERT ON pagos
+FOR EACH ROW
+BEGIN
+    DECLARE v_monto_total DECIMAL(12,2);
+    DECLARE v_total_cobros DECIMAL(12,2);
+    DECLARE v_nuevo_saldo DECIMAL(12,2);
+    DECLARE v_nuevo_estado VARCHAR(20);
+
+    SELECT monto_total INTO v_monto_total
+    FROM facturas
+    WHERE id = NEW.factura_id;
+
+    SELECT COALESCE(SUM(monto), 0.00) INTO v_total_cobros
+    FROM pagos
+    WHERE factura_id = NEW.factura_id
+      AND estado = 'Aplicado'
+      AND monto > 0;
+
+    SET v_nuevo_saldo = GREATEST(0.00, v_monto_total - v_total_cobros);
+
+    IF v_nuevo_saldo = 0.00 THEN
+        SET v_nuevo_estado = 'Pagada';
+    ELSE
+        SET v_nuevo_estado = 'Pendiente';
+    END IF;
+
+    UPDATE facturas
+    SET saldo_pendiente = v_nuevo_saldo,
+        estado = IF(estado IN ('Pendiente', 'Pagada'), v_nuevo_estado, estado)
+    WHERE id = NEW.factura_id;
+END$$
+
+
+-- T13. trg_bd_facturas_validar_eliminacion
+
+
+DROP TRIGGER IF EXISTS trg_bd_facturas_validar_eliminacion$$
+CREATE TRIGGER trg_bd_facturas_validar_eliminacion
+BEFORE DELETE ON facturas
+FOR EACH ROW
+BEGIN
+    DECLARE v_pagos INT DEFAULT 0;
+
+    SELECT COUNT(*) INTO v_pagos
+    FROM pagos
+    WHERE factura_id = OLD.id;
+
+    IF v_pagos > 0 THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'No se puede eliminar la factura: existen pagos registrados asociados';
+    END IF;
+END$$
+
+
+-- T14. trg_bi_pagos_validar_monto_y_estado
+
+DROP TRIGGER IF EXISTS trg_bi_pagos_validar_monto_y_estado$$
+CREATE TRIGGER trg_bi_pagos_validar_monto_y_estado
+BEFORE INSERT ON pagos
+FOR EACH ROW
+BEGIN
+    DECLARE v_saldo DECIMAL(12,2);
+    DECLARE v_estado VARCHAR(20);
+    DECLARE v_neto_pagado DECIMAL(12,2);
+
+    SELECT saldo_pendiente, estado INTO v_saldo, v_estado
+    FROM facturas
+    WHERE id = NEW.factura_id;
+
+    IF NEW.monto > 0 THEN
+        IF v_estado IN ('Anulada', 'Cancelada') THEN
+            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'No se pueden registrar pagos en facturas Anuladas o Canceladas';
+        END IF;
+
+        IF NEW.monto > v_saldo THEN
+            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'El monto del cobro excede el saldo pendiente de la factura';
+        END IF;
+    ELSE
+        -- Reembolso negativo
+        SELECT COALESCE(SUM(monto), 0.00) INTO v_neto_pagado
+        FROM pagos
+        WHERE factura_id = NEW.factura_id AND estado = 'Aplicado';
+
+        IF ABS(NEW.monto) > v_neto_pagado THEN
+            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'El reembolso no puede exceder el monto neto pagado de la factura';
+        END IF;
+    END IF;
+END$$
+
+
+-- T15. trg_au_pagos_recalcular_saldo
+
+DROP TRIGGER IF EXISTS trg_au_pagos_recalcular_saldo$$
+CREATE TRIGGER trg_au_pagos_recalcular_saldo
+AFTER UPDATE ON pagos
+FOR EACH ROW
+BEGIN
+    DECLARE v_monto_total DECIMAL(12,2);
+    DECLARE v_total_cobros DECIMAL(12,2);
+    DECLARE v_nuevo_saldo DECIMAL(12,2);
+
+    IF OLD.estado <> NEW.estado AND NEW.estado = 'Cancelado' THEN
+        SELECT monto_total INTO v_monto_total
+        FROM facturas WHERE id = NEW.factura_id;
+
+        SELECT COALESCE(SUM(monto), 0.00) INTO v_total_cobros
+        FROM pagos
+        WHERE factura_id = NEW.factura_id
+          AND estado = 'Aplicado'
+          AND monto > 0;
+
+        SET v_nuevo_saldo = GREATEST(0.00, v_monto_total - v_total_cobros);
+
+        UPDATE facturas
+        SET saldo_pendiente = v_nuevo_saldo,
+            estado = IF(v_nuevo_saldo = 0, 'Pagada', 'Pendiente')
+        WHERE id = NEW.factura_id;
+
+        INSERT INTO logs_auditoria (accion, tabla_afectada, registro_id, fecha)
+        VALUES ('PAGO_CANCELADO_RECALCULO_SALDO', 'pagos', NEW.id, NOW());
+    END IF;
+END$$

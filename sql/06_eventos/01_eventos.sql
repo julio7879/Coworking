@@ -276,3 +276,135 @@ BEGIN
     CLOSE cur_noshow;
 END$$
 DELIMITER ;
+
+
+-- SECCIÓN 3: EVENTOS DE FACTURACIÓN Y FINANZAS (11 - 15)
+-- Integrante responsable: Valeria Lizcano Arena
+
+-- 11. evt_3dias_aviso_pago_pendiente
+
+DROP EVENT IF EXISTS evt_3dias_aviso_pago_pendiente;
+DELIMITER $$
+CREATE EVENT evt_3dias_aviso_pago_pendiente
+ON SCHEDULE EVERY 3 DAY
+STARTS (CURRENT_DATE + INTERVAL 9 HOUR)
+DO
+BEGIN
+    INSERT INTO cola_notificaciones (tipo, destinatario, contenido, estado, fecha_creacion)
+    SELECT 
+        'Aviso_Pago_Pendiente',
+        u.email,
+        CONCAT('Estimado/a ', u.nombre, ', tiene la factura #', f.id, ' por un saldo de $', f.saldo_pendiente, ' con vencimiento el ', DATE_FORMAT(f.fecha_vencimiento, '%d/%m/%Y'), '.'),
+        'Pendiente',
+        NOW()
+    FROM facturas f
+    JOIN usuarios u ON f.usuario_id = u.id
+    WHERE f.estado = 'Pendiente'
+      AND f.saldo_pendiente > 0;
+END$$
+DELIMITER ;
+
+
+-- 12. evt_diario_marcar_incobrables
+
+DROP EVENT IF EXISTS evt_diario_marcar_incobrables;
+DELIMITER $$
+CREATE EVENT evt_diario_marcar_incobrables
+ON SCHEDULE EVERY 1 DAY
+STARTS (CURRENT_DATE + INTERVAL 1 DAY + INTERVAL 1 HOUR)
+DO
+BEGIN
+    DECLARE v_dias_inc INT DEFAULT 90;
+    SELECT CAST(COALESCE(MAX(valor), '90') AS UNSIGNED) INTO v_dias_inc
+    FROM configuracion_sistema WHERE clave = 'dias_incobrable';
+
+    UPDATE facturas
+    SET estado = 'Incobrable'
+    WHERE estado = 'Pendiente'
+      AND saldo_pendiente > 0
+      AND DATEDIFF(CURRENT_DATE, fecha_vencimiento) > v_dias_inc;
+END$$
+DELIMITER ;
+
+
+-- 13. evt_mensual_renovacion_corporativa
+
+DROP EVENT IF EXISTS evt_mensual_renovacion_corporativa;
+DELIMITER $$
+CREATE EVENT evt_mensual_renovacion_corporativa
+ON SCHEDULE EVERY 1 MONTH
+STARTS (DATE_FORMAT(NOW(), '%Y-%m-01 00:05:00'))
+DO
+BEGIN
+    DECLARE v_done INT DEFAULT FALSE;
+    DECLARE v_empresa_id INT;
+    DECLARE v_cred_pool INT;
+    DECLARE v_fid INT;
+
+    DECLARE cur_empresas CURSOR FOR
+        SELECT id, creditos_mensuales FROM empresas
+        WHERE id NOT IN (
+            SELECT DISTINCT empresa_id FROM facturas
+            WHERE empresa_id IS NOT NULL AND estado = 'Incobrable'
+        );
+
+    DECLARE CONTINUE HANDLER FOR NOT FOUND SET v_done = TRUE;
+
+    OPEN cur_empresas;
+    emp_loop: LOOP
+        FETCH cur_empresas INTO v_empresa_id, v_cred_pool;
+        IF v_done THEN
+            LEAVE emp_loop;
+        END IF;
+
+        -- 1. Renovar membresías activas de sus empleados al nuevo mes
+        UPDATE membresias m
+        JOIN usuarios u ON m.usuario_id = u.id
+        SET m.fecha_inicio = NOW(),
+            m.fecha_fin = STR_TO_DATE(CONCAT(LAST_DAY(NOW()), ' 23:59:59'), '%Y-%m-%d %H:%i:%s'),
+            m.renovaciones = m.renovaciones + 1,
+            m.estado = 'Activa'
+        WHERE u.empresa_id = v_empresa_id
+          AND m.tipo_id = 3
+          AND u.activo = TRUE;
+
+        -- 2. Emitir factura consolidada única
+        CALL sp_generar_factura_consolidada_empresa(v_empresa_id, MONTH(NOW()), YEAR(NOW()), v_fid);
+
+        -- 3. Reinicio del pool de créditos corporativos en movimientos_credito
+        IF v_cred_pool > 0 THEN
+            INSERT INTO movimientos_credito (empresa_id, creditos, tipo, fecha)
+            VALUES (v_empresa_id, v_cred_pool, 'Reinicio', NOW());
+        END IF;
+    END LOOP;
+    CLOSE cur_empresas;
+END$$
+DELIMITER ;
+
+
+-- 14. evt_diario_aplicar_recargos_mora
+
+DROP EVENT IF EXISTS evt_diario_aplicar_recargos_mora;
+DELIMITER $$
+CREATE EVENT evt_diario_aplicar_recargos_mora
+ON SCHEDULE EVERY 1 DAY
+STARTS (CURRENT_DATE + INTERVAL 1 DAY + INTERVAL 30 MINUTE)
+DO
+BEGIN
+    CALL sp_aplicar_recargos_facturas_vencidas();
+END$$
+DELIMITER ;
+
+
+-- 15. evt_mensual_reporte_contable
+
+DROP EVENT IF EXISTS evt_mensual_reporte_contable;
+DELIMITER $$
+CREATE EVENT evt_mensual_reporte_contable
+ON SCHEDULE EVERY 1 MONTH
+STARTS (DATE_FORMAT(NOW(), '%Y-%m-01 02:00:00'))
+DO
+BEGIN
+    CALL sp_generar_reporte_ingresos_mensuales(YEAR(NOW()));
+END$$
+DELIMITER ;
