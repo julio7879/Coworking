@@ -339,22 +339,6 @@ BEGIN
       AND p.estado = 'Aplicado';
 
     RETURN (v_empresa + v_empleados);
-END$$.
-DROP FUNCTION IF EXISTS fn_ingresos_por_reservas$$
-CREATE FUNCTION fn_ingresos_por_reservas(p_mes INT, p_anio INT)
-RETURNS DECIMAL(12,2)
-DETERMINISTIC
-READS SQL DATA
-BEGIN
-    DECLARE v_total DECIMAL(12,2) DEFAULT 0.00;
-    SELECT COALESCE(SUM(p.monto), 0.00) INTO v_total
-    FROM pagos p
-    JOIN facturas f ON p.factura_id = f.id
-    WHERE f.tipo = 'Reserva'
-      AND p.estado = 'Aplicado'
-      AND MONTH(p.fecha_pago) = p_mes
-      AND YEAR(p.fecha_pago) = p_anio;
-    RETURN v_total;
 END$$
 
 -- SECCIÓN 4: FUNCIONES DE ASISTENCIAS Y ACCESOS (16 - 20)

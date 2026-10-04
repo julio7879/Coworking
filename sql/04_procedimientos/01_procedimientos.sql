@@ -215,6 +215,8 @@ END$$
 
 -- 5. sp_verificar_disponibilidad
 
+-- 5. sp_verificar_disponibilidad
+
 DROP PROCEDURE IF EXISTS sp_verificar_disponibilidad$$
 CREATE PROCEDURE sp_verificar_disponibilidad(
     IN  p_espacio_id   INT,
@@ -225,7 +227,7 @@ CREATE PROCEDURE sp_verificar_disponibilidad(
     OUT p_disponible   BOOLEAN,
     OUT p_motivo       VARCHAR(255)
 )
-BEGIN
+proc_label: BEGIN
     DECLARE v_estado VARCHAR(20);
     DECLARE v_modo VARCHAR(20);
     DECLARE v_capacidad INT;
@@ -244,7 +246,7 @@ BEGIN
     IF p_fecha_fin <= p_fecha_inicio THEN
         SET p_disponible = FALSE;
         SET p_motivo = 'La fecha de fin debe ser posterior a la de inicio';
-        RETURN;
+        LEAVE proc_label;
     END IF;
 
     SELECT e.estado, te.modo_ocupacion, e.capacidad_maxima, te.permite_reserva_hora, te.permite_reserva_mes
@@ -256,27 +258,27 @@ BEGIN
     IF v_estado IS NULL THEN
         SET p_disponible = FALSE;
         SET p_motivo = 'Espacio no existe';
-        RETURN;
+        LEAVE proc_label;
     ELSEIF v_estado <> 'Disponible' THEN
         SET p_disponible = FALSE;
         SET p_motivo = CONCAT('El espacio se encuentra en estado: ', v_estado);
-        RETURN;
+        LEAVE proc_label;
     END IF;
 
     IF p_modalidad = 'Hora' AND NOT v_perm_hora THEN
         SET p_disponible = FALSE;
         SET p_motivo = 'Este tipo de espacio no permite reservas por hora';
-        RETURN;
+        LEAVE proc_label;
     ELSEIF p_modalidad = 'Mes' AND NOT v_perm_mes THEN
         SET p_disponible = FALSE;
         SET p_motivo = 'Este tipo de espacio no permite reservas mensuales';
-        RETURN;
+        LEAVE proc_label;
     END IF;
 
     IF p_num_personas > v_capacidad THEN
         SET p_disponible = FALSE;
         SET p_motivo = CONCAT('El número de personas (', p_num_personas, ') supera la capacidad máxima (', v_capacidad, ')');
-        RETURN;
+        LEAVE proc_label;
     END IF;
 
     IF p_modalidad = 'Hora' THEN
@@ -294,7 +296,7 @@ BEGIN
         IF v_apertura IS NULL OR v_hora_ini < v_apertura OR v_hora_fin > v_cierre THEN
             SET p_disponible = FALSE;
             SET p_motivo = 'La reserva está fuera del horario de disponibilidad del espacio';
-            RETURN;
+            LEAVE proc_label;
         END IF;
     END IF;
 
@@ -309,10 +311,9 @@ BEGIN
         IF v_solapados > 0 THEN
             SET p_disponible = FALSE;
             SET p_motivo = 'El espacio exclusivo ya cuenta con una reserva en el horario solicitado';
-            RETURN;
+            LEAVE proc_label;
         END IF;
     ELSE
-
         SELECT COALESCE(SUM(num_personas), 0) INTO v_solapados
         FROM reservas
         WHERE espacio_id = p_espacio_id
@@ -323,10 +324,10 @@ BEGIN
         IF (v_solapados + p_num_personas) > v_capacidad THEN
             SET p_disponible = FALSE;
             SET p_motivo = CONCAT('Capacidad compartida excedida. Ocupadas: ', v_solapados, ', Solicitadas: ', p_num_personas, ', Capacidad: ', v_capacidad);
-            RETURN;
+            LEAVE proc_label;
         END IF;
     END IF;
-END$$
+END proc_label$$
 
 -- 6. sp_crear_reserva
 
@@ -483,6 +484,11 @@ BEGIN
     IF v_factura_id IS NOT NULL AND v_saldo > 0 THEN
         CALL sp_registrar_pago(v_factura_id, v_saldo, p_metodo_pago_id, p_referencia, v_pago_id);
     END IF;
+
+    -- Confirmación explícita del estado de la reserva
+    UPDATE reservas
+    SET estado = 'Confirmada'
+    WHERE id = p_reserva_id AND estado = 'Pendiente';
 
     COMMIT;
 END$$
@@ -725,6 +731,8 @@ CREATE PROCEDURE sp_registrar_pago(
     OUT p_pago_id        INT
 )
 BEGIN
+    DECLARE v_saldo_actual DECIMAL(12,2);
+
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
     BEGIN
         ROLLBACK;
@@ -737,6 +745,12 @@ BEGIN
     VALUES (p_factura_id, p_monto, NOW(), p_metodo_pago_id, p_referencia, 'Aplicado');
 
     SET p_pago_id = LAST_INSERT_ID();
+
+    -- Actualización de saldo de factura
+    UPDATE facturas
+    SET saldo_pendiente = GREATEST(0.00, saldo_pendiente - p_monto),
+        estado = IF(saldo_pendiente - p_monto <= 0, 'Pagada', estado)
+    WHERE id = p_factura_id;
 
     COMMIT;
 END$$
