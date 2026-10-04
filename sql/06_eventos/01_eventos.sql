@@ -408,3 +408,152 @@ BEGIN
     CALL sp_generar_reporte_ingresos_mensuales(YEAR(NOW()));
 END$$
 DELIMITER ;
+
+-- =====================================================================
+-- SECCIÓN 4: EVENTOS DE ACCESOS Y SEGURIDAD (16 - 20)
+-- Integrante Responsable: Brenda Nico Carrillo Gonzalez
+-- =====================================================================
+
+
+-- 16. evt_15min_auto_checkout_cierre
+
+
+DROP EVENT IF EXISTS evt_15min_auto_checkout_cierre;
+DELIMITER $$
+CREATE EVENT evt_15min_auto_checkout_cierre
+ON SCHEDULE EVERY 15 MINUTE
+DO
+BEGIN
+    DECLARE v_hora_cierre TIME DEFAULT '22:00:00';
+    SELECT CAST(COALESCE(MAX(valor), '22:00:00') AS TIME) INTO v_hora_cierre
+    FROM configuracion_sistema WHERE clave = 'hora_cierre';
+
+    IF TIME(NOW()) >= v_hora_cierre THEN
+        UPDATE accesos
+        SET fecha_hora_salida = STR_TO_DATE(CONCAT(CURRENT_DATE, ' ', v_hora_cierre), '%Y-%m-%d %H:%i:%s')
+        WHERE estado_intento = 'Permitido'
+          AND fecha_hora_salida IS NULL;
+    END IF;
+END$$
+DELIMITER ;
+
+-- 17. evt_diario_reporte_asistencias
+
+DROP EVENT IF EXISTS evt_diario_reporte_asistencias;
+DELIMITER $$
+CREATE EVENT evt_diario_reporte_asistencias
+ON SCHEDULE EVERY 1 DAY
+STARTS (CURRENT_DATE + INTERVAL 23 HOUR + INTERVAL 55 MINUTE)
+DO
+BEGIN
+    CALL sp_generar_reporte_diario_asistencias(CURRENT_DATE);
+END$$
+DELIMITER ;
+
+-- 18. evt_semanal_usuarios_inactivos
+
+
+DROP EVENT IF EXISTS evt_semanal_usuarios_inactivos;
+DELIMITER $$
+CREATE EVENT evt_semanal_usuarios_inactivos
+ON SCHEDULE EVERY 1 WEEK
+STARTS (CURRENT_DATE + INTERVAL 22 HOUR)
+DO
+BEGIN
+    INSERT INTO cola_notificaciones (tipo, destinatario, contenido, estado, fecha_creacion)
+    SELECT 
+        'Reactivacion_Usuario_Inactivo',
+        u.email,
+        CONCAT('Hola ', u.nombre, ', ¡te extrañamos en el coworking! Tu membresía está activa. Ven a disfrutar de nuestros espacios.'),
+        'Pendiente',
+        NOW()
+    FROM usuarios u
+    JOIN membresias m ON m.usuario_id = u.id AND m.estado = 'Activa' AND NOW() BETWEEN m.fecha_inicio AND m.fecha_fin
+    WHERE NOT EXISTS (
+        SELECT 1 FROM asistencias a
+        WHERE a.usuario_id = u.id
+          AND a.tipo = 'Edificio'
+          AND a.fecha_entrada >= DATE_SUB(NOW(), INTERVAL 15 DAY)
+    );
+END$$
+DELIMITER ;
+
+-- 19. evt_diario_alerta_accesos_fuera_horario
+
+
+DROP EVENT IF EXISTS evt_diario_alerta_accesos_fuera_horario;
+DELIMITER $$
+CREATE EVENT evt_diario_alerta_accesos_fuera_horario
+ON SCHEDULE EVERY 1 DAY
+STARTS (CURRENT_DATE + INTERVAL 6 HOUR + INTERVAL 30 MINUTE)
+DO
+BEGIN
+    DECLARE v_rec_email VARCHAR(150);
+    DECLARE v_rechazos INT DEFAULT 0;
+
+    SELECT COALESCE(MAX(valor), 'recepcion@coworking.com') INTO v_rec_email
+    FROM configuracion_sistema WHERE clave = 'email_recepcion';
+
+    SELECT COUNT(*) INTO v_rechazos
+    FROM accesos
+    WHERE estado_intento = 'Rechazado'
+      AND motivo_rechazo LIKE '%fuera del horario%'
+      AND fecha_hora_entrada >= DATE_SUB(NOW(), INTERVAL 24 HOUR);
+
+    IF v_rechazos > 0 THEN
+        INSERT INTO cola_notificaciones (tipo, destinatario, contenido, estado, fecha_creacion)
+        VALUES (
+            'Alerta_Accesos_Fuera_Horario',
+            v_rec_email,
+            CONCAT('Reporte de Seguridad: Se registraron ', v_rechazos, ' intentos de acceso fuera de horario en las últimas 24 horas.'),
+            'Pendiente',
+            NOW()
+        );
+    END IF;
+END$$
+DELIMITER ;
+
+
+-- 20. evt_mensual_top_frecuentes_y_depuracion
+
+DROP EVENT IF EXISTS evt_mensual_top_frecuentes_y_depuracion;
+DELIMITER $$
+CREATE EVENT evt_mensual_top_frecuentes_y_depuracion
+ON SCHEDULE EVERY 1 MONTH
+STARTS (DATE_FORMAT(NOW(), '%Y-%m-01 03:00:00'))
+DO
+BEGIN
+    DECLARE v_ranking JSON;
+
+    SELECT JSON_ARRAYAGG(
+        JSON_OBJECT(
+            'posicion', ranking,
+            'usuario_id', usuario_id,
+            'nombre', nombre_completo,
+            'visitas_edificio', total_visitas
+        )
+    ) INTO v_ranking
+    FROM (
+        SELECT 
+            ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC) AS ranking,
+            u.id AS usuario_id,
+            CONCAT(u.nombre, ' ', u.apellidos) AS nombre_completo,
+            COUNT(*) AS total_visitas
+        FROM asistencias a
+        JOIN usuarios u ON a.usuario_id = u.id
+        WHERE a.tipo = 'Edificio'
+          AND a.fecha_entrada >= DATE_SUB(NOW(), INTERVAL 1 MONTH)
+        GROUP BY u.id, u.nombre, u.apellidos
+        ORDER BY total_visitas DESC
+        LIMIT 10
+    ) AS top10;
+
+    INSERT INTO reportes_generados (tipo, datos, fecha_generacion)
+    VALUES ('Ranking_Mensual_Top10_Frecuentes', COALESCE(v_ranking, JSON_ARRAY()), NOW());
+
+    -- Depuración de cola_notificaciones de más de 90 días (accesos NO se tocan)
+    DELETE FROM cola_notificaciones
+    WHERE estado = 'Enviada'
+      AND fecha_creacion < DATE_SUB(NOW(), INTERVAL 90 DAY);
+END$$
+DELIMITER ;

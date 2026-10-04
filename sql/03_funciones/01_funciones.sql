@@ -392,29 +392,99 @@ BEGIN
     RETURN v_total;
 END$$
 
--- 15. fn_ingresos_por_empresa.
+-- SECCIÓN 4: FUNCIONES DE ASISTENCIAS Y ACCESOS (16 - 20)
+-- Integrante Responsable: Brenda Nico Carrillo Gonzalez
 
-DROP FUNCTION IF EXISTS fn_ingresos_por_empresa$$
-CREATE FUNCTION fn_ingresos_por_empresa(p_empresa_id INT)
-RETURNS DECIMAL(12,2)
+-- 16. fn_total_asistencias
+
+DROP FUNCTION IF EXISTS fn_total_asistencias$$
+CREATE FUNCTION fn_total_asistencias(p_usuario_id INT)
+RETURNS INT
 DETERMINISTIC
 READS SQL DATA
 BEGIN
-    DECLARE v_empresa DECIMAL(12,2) DEFAULT 0.00;
-    DECLARE v_empleados DECIMAL(12,2) DEFAULT 0.00;
-
-    SELECT COALESCE(SUM(p.monto), 0.00) INTO v_empresa
-    FROM pagos p
-    JOIN facturas f ON p.factura_id = f.id
-    WHERE f.empresa_id = p_empresa_id
-      AND p.estado = 'Aplicado';
-
-    SELECT COALESCE(SUM(p.monto), 0.00) INTO v_empleados
-    FROM pagos p
-    JOIN facturas f ON p.factura_id = f.id
-    JOIN usuarios u ON f.usuario_id = u.id
-    WHERE u.empresa_id = p_empresa_id
-      AND p.estado = 'Aplicado';
-
-    RETURN (v_empresa + v_empleados);
+    DECLARE v_total INT DEFAULT 0;
+    SELECT COUNT(*) INTO v_total
+    FROM asistencias
+    WHERE usuario_id = p_usuario_id
+      AND tipo = 'Edificio';
+    RETURN COALESCE(v_total, 0);
 END$$
+
+-- 17. fn_asistencias_mes
+
+DROP FUNCTION IF EXISTS fn_asistencias_mes$$
+CREATE FUNCTION fn_asistencias_mes(p_usuario_id INT, p_mes INT, p_anio INT)
+RETURNS INT
+DETERMINISTIC
+READS SQL DATA
+BEGIN
+    DECLARE v_total INT DEFAULT 0;
+    SELECT COUNT(*) INTO v_total
+    FROM asistencias
+    WHERE usuario_id = p_usuario_id
+      AND tipo = 'Edificio'
+      AND MONTH(fecha_entrada) = p_mes
+      AND YEAR(fecha_entrada) = p_anio;
+    RETURN COALESCE(v_total, 0);
+END$$
+
+-- 18. fn_ultima_asistencia
+
+DROP FUNCTION IF EXISTS fn_ultima_asistencia$$
+CREATE FUNCTION fn_ultima_asistencia(p_usuario_id INT)
+RETURNS DATETIME
+DETERMINISTIC
+READS SQL DATA
+BEGIN
+    DECLARE v_fecha DATETIME;
+    SELECT fecha_entrada INTO v_fecha
+    FROM asistencias
+    WHERE usuario_id = p_usuario_id
+      AND tipo = 'Edificio'
+    ORDER BY fecha_entrada DESC
+    LIMIT 1;
+    RETURN v_fecha;
+END$$
+
+-- 19. fn_top_usuario_asistencias
+
+DROP FUNCTION IF EXISTS fn_top_usuario_asistencias$$
+CREATE FUNCTION fn_top_usuario_asistencias()
+RETURNS INT
+DETERMINISTIC
+READS SQL DATA
+BEGIN
+    DECLARE v_usuario_id INT;
+    SELECT usuario_id INTO v_usuario_id
+    FROM asistencias
+    WHERE tipo = 'Edificio'
+    GROUP BY usuario_id
+    ORDER BY COUNT(*) DESC, usuario_id ASC
+    LIMIT 1;
+    RETURN v_usuario_id;
+END$$
+
+-- 20. fn_promedio_asistencias
+
+DROP FUNCTION IF EXISTS fn_promedio_asistencias$$
+CREATE FUNCTION fn_promedio_asistencias()
+RETURNS DECIMAL(10,2)
+DETERMINISTIC
+READS SQL DATA
+BEGIN
+    DECLARE v_prom DECIMAL(10,2) DEFAULT 0.00;
+    SELECT COALESCE(AVG(asist_count), 0.00) INTO v_prom
+    FROM (
+        SELECT COUNT(a.id) AS asist_count
+        FROM usuarios u
+        JOIN membresias m ON m.usuario_id = u.id
+            AND m.estado = 'Activa'
+            AND NOW() BETWEEN m.fecha_inicio AND m.fecha_fin
+        LEFT JOIN asistencias a ON a.usuario_id = u.id AND a.tipo = 'Edificio'
+        GROUP BY u.id
+    ) AS sub;
+    RETURN v_prom;
+END$$
+
+DELIMITER ;

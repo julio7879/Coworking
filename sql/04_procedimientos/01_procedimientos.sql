@@ -911,3 +911,132 @@ BEGIN
 
     COMMIT;
 END$$
+
+-- SECCIÓN 5: PROCEDIMIENTOS CORPORATIVOS Y DE REPORTES (18 - 20)
+-- Integrante Responsable: Brenda Nico Carrillo Gonzalez
+
+-- 18. sp_registrar_lote_empleados
+
+
+DROP PROCEDURE IF EXISTS sp_registrar_lote_empleados$$
+CREATE PROCEDURE sp_registrar_lote_empleados(
+    IN p_empresa_id INT,
+    IN p_empleados  JSON
+)
+BEGIN
+    DECLARE i INT DEFAULT 0;
+    DECLARE v_count INT;
+    DECLARE v_nombre VARCHAR(80);
+    DECLARE v_apellidos VARCHAR(100);
+    DECLARE v_email VARCHAR(150);
+    DECLARE v_telefono VARCHAR(30);
+    DECLARE v_uid INT;
+    DECLARE v_mid INT;
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        RESIGNAL;
+    END;
+
+    START TRANSACTION;
+
+    SET v_count = JSON_LENGTH(p_empleados);
+
+    WHILE i < v_count DO
+        SET v_nombre    = JSON_UNQUOTE(JSON_EXTRACT(p_empleados, CONCAT('$[', i, '].nombre')));
+        SET v_apellidos = JSON_UNQUOTE(JSON_EXTRACT(p_empleados, CONCAT('$[', i, '].apellidos')));
+        SET v_email     = JSON_UNQUOTE(JSON_EXTRACT(p_empleados, CONCAT('$[', i, '].email')));
+        SET v_telefono  = JSON_UNQUOTE(JSON_EXTRACT(p_empleados, CONCAT('$[', i, '].telefono')));
+
+        INSERT INTO usuarios (nombre, apellidos, email, telefono, empresa_id, rol_id, tipo_usuario, fecha_registro)
+        VALUES (v_nombre, v_apellidos, v_email, v_telefono, p_empresa_id, 3, 'Cliente', CURRENT_DATE);
+
+        SET v_uid = LAST_INSERT_ID();
+
+        -- Membresía corporativa inicia hoy y vence fin de mes
+        CALL sp_registrar_membresia(v_uid, 3, NOW(), v_mid);
+
+        SET i = i + 1;
+    END WHILE;
+
+    COMMIT;
+END$$
+
+-- 19. sp_cancelar_reservas_futuras_usuario
+
+DROP PROCEDURE IF EXISTS sp_cancelar_reservas_futuras_usuario$$
+CREATE PROCEDURE sp_cancelar_reservas_futuras_usuario(
+    IN p_usuario_id INT,
+    IN p_motivo     VARCHAR(255)
+)
+BEGIN
+    DECLARE v_done INT DEFAULT FALSE;
+    DECLARE v_rid INT;
+    DECLARE cur_reservas CURSOR FOR
+        SELECT id FROM reservas
+        WHERE usuario_id = p_usuario_id
+          AND estado IN ('Pendiente', 'Confirmada')
+          AND fecha_inicio > NOW();
+
+    DECLARE CONTINUE HANDLER FOR NOT FOUND SET v_done = TRUE;
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        RESIGNAL;
+    END;
+
+    START TRANSACTION;
+
+    OPEN cur_reservas;
+    canc_loop: LOOP
+        FETCH cur_reservas INTO v_rid;
+        IF v_done THEN
+            LEAVE canc_loop;
+        END IF;
+
+        CALL sp_cancelar_reserva(v_rid, TRUE);
+    END LOOP;
+    CLOSE cur_reservas;
+
+    COMMIT;
+END$$
+
+-- 20. sp_generar_reporte_ingresos_mensuales
+
+
+DROP PROCEDURE IF EXISTS sp_generar_reporte_ingresos_mensuales$$
+CREATE PROCEDURE sp_generar_reporte_ingresos_mensuales(IN p_anio INT)
+BEGIN
+    DECLARE v_reporte JSON;
+
+    SELECT JSON_ARRAYAGG(
+        JSON_OBJECT(
+            'mes', mes,
+            'ingresos_membresias', ingresos_membresias,
+            'ingresos_reservas', ingresos_reservas,
+            'ingresos_servicios', ingresos_servicios,
+            'total_neto', total_neto
+        )
+    ) INTO v_reporte
+    FROM (
+        SELECT 
+            MONTH(p.fecha_pago) AS mes,
+            SUM(CASE WHEN f.tipo IN ('Membresia', 'Consolidada') THEN p.monto ELSE 0 END) AS ingresos_membresias,
+            SUM(CASE WHEN f.tipo = 'Reserva' THEN p.monto ELSE 0 END) AS ingresos_reservas,
+            SUM(CASE WHEN f.tipo = 'Servicio' THEN p.monto ELSE 0 END) AS ingresos_servicios,
+            SUM(p.monto) AS total_neto
+        FROM pagos p
+        JOIN facturas f ON p.factura_id = f.id
+        WHERE p.estado = 'Aplicado'
+          AND YEAR(p.fecha_pago) = p_anio
+        GROUP BY MONTH(p.fecha_pago)
+        ORDER BY mes ASC
+    ) AS resumen;
+
+    INSERT INTO reportes_generados (tipo, datos, fecha_generacion)
+    VALUES (CONCAT('Reporte_Ingresos_Anual_', p_anio), v_reporte, NOW());
+END$$
+
+DELIMITER ;
