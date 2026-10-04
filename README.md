@@ -33,7 +33,7 @@ Base de datos relacional completa implementada en **MySQL 8.0+** para la adminis
 9. [Escalera de Mora](#escalera-de-mora)
 10. [Consultas Analíticas](#consultas-analíticas)
 11. [Ejemplos de Uso](#ejemplos-de-uso)
-12. [Pruebas y Verificación](#pruebas-y-verificación)
+12. [Flujos de Negocio y Verificación](#flujos-de-negocio-y-verificación)
 13. [Contribuciones y Licencia](#contribuciones-y-licencia)
 
 ---
@@ -73,8 +73,7 @@ coworking-db/
 │
 ├── docs/                                      # Documentación técnica y diagramas
 │   ├── modelo_logico.md                       # Especificación detallada del modelo relacional
-│   ├── modelo_logico.png                      # Diagrama relacional visual (ER)
-│   ├── modelo_logico_er.jpg                   # Diagrama ER extendido
+│   ├── Modelo_Logico.png                      # Diagrama relacional visual (ER)
 │   └── roles_permisos.md                      # Matriz de roles, usuarios y permisos MySQL
 │
 └── sql/                                       # Scripts SQL modulares
@@ -83,6 +82,13 @@ coworking-db/
     │
     ├── 01_dml/
     │   └── 01_datos_iniciales.sql             # DML: Datos base (55 usuarios, 110 reservas, 210+ pagos)
+    │
+    ├── 02_consultas/
+    │   ├── 01_usuarios_membresias.sql         # Consultas analíticas Q01 a Q20
+    │   ├── 02_espacios_reservas.sql           # Consultas analíticas Q21 a Q40
+    │   ├── 03_pagos_facturacion.sql           # Consultas analíticas Q41 a Q60
+    │   ├── 04_accesos_asistencias.sql         # Consultas analíticas Q61 a Q80
+    │   └── 05_consultas_avanzadas.sql         # Consultas avanzadas Q81 a Q100 (KPIs y agregados)
     │
     ├── 03_funciones/
     │   └── 01_funciones.sql                   # 20 funciones deterministas (fn_*)
@@ -96,20 +102,10 @@ coworking-db/
     ├── 06_eventos/
     │   └── 01_eventos.sql                     # 20 eventos programados (evt_*) en segundo plano
     │
-    ├── 07_seguridad/
-    │   ├── 01_roles.sql                       # Roles de aplicación y roles MySQL del servidor
-    │   ├── 02_permisos.sql                    # Concesión de privilegios GRANT (mínimo privilegio)
-    │   └── 03_usuarios.sql                    # Creación de usuarios MySQL predefinidos
-    │
-    ├── 08_consultas/
-    │   ├── 01_usuarios_membresias.sql         # Consultas analíticas Q01 a Q20
-    │   ├── 02_espacios_reservas.sql           # Consultas analíticas Q21 a Q40
-    │   ├── 03_pagos_facturacion.sql           # Consultas analíticas Q41 a Q60
-    │   ├── 04_accesos_asistencias.sql         # Consultas analíticas Q61 a Q80
-    │   └── 05_avanzadas.sql                   # Consultas avanzadas Q81 a Q100 (KPIs y agregados)
-    │
-    └── 09_pruebas/
-        └── 01_escenarios.sql                  # 11 escenarios de verificación cruzada
+    └── 07_seguridad/
+        ├── 01_roles.sql                       # Roles de aplicación y roles MySQL del servidor
+        ├── 02_permisos.sql                    # Concesión de privilegios GRANT (mínimo privilegio)
+        └── 03_usuarios.sql                    # Creación de usuarios MySQL predefinidos
 ```
 
 ---
@@ -119,7 +115,7 @@ coworking-db/
 El directorio [`docs/`](docs/) contiene guías detalladas para el diseño y administración de la base de datos:
 
 - **[docs/modelo_logico.md](docs/modelo_logico.md)**: Explicación de los 7 grupos de entidades, claves primarias, foráneas, tipos de datos y relaciones de negocio.
-- **[docs/modelo_logico.png](docs/modelo_logico.png)**: Diagrama entidad-relación gráfico del sistema.
+- **[docs/Modelo_Logico.png](docs/Modelo_Logico.png)**: Diagrama entidad-relación gráfico del sistema.
 - **[docs/roles_permisos.md](docs/roles_permisos.md)**: Matriz completa de permisos por tabla/vista, seguridad a nivel de fila y gestión de usuarios del servidor.
 
 ---
@@ -154,9 +150,6 @@ SOURCE sql/06_eventos/01_eventos.sql;
 SOURCE sql/07_seguridad/01_roles.sql;
 SOURCE sql/07_seguridad/02_permisos.sql;
 SOURCE sql/07_seguridad/03_usuarios.sql;
-
--- 8. (Opcional) Ejecución de pruebas integrales
-SOURCE sql/09_pruebas/01_escenarios.sql;
 ```
 
 ---
@@ -354,13 +347,13 @@ El sistema implementa separación de responsabilidades a dos niveles: **roles de
 
 ## Consultas Analíticas
 
-El directorio [`sql/08_consultas/`](sql/08_consultas/) contiene **100 consultas analíticas avanzadas** (20 por archivo):
+El directorio [`sql/02_consultas/`](sql/02_consultas/) contiene **100 consultas analíticas avanzadas** (20 por archivo):
 
-- **[01_usuarios_membresias.sql](sql/08_consultas/01_usuarios_membresias.sql)** (Q01 - Q20): Análisis de cohortes, retención, churn rate, distribución por plan y renovación.
-- **[02_espacios_reservas.sql](sql/08_consultas/02_espacios_reservas.sql)** (Q21 - Q40): Ocupación horaria, espacios de mayor demanda, tasas de cancelación y horas pico.
-- **[03_pagos_facturacion.sql](sql/08_consultas/03_pagos_facturacion.sql)** (Q41 - Q60): Flujo de caja, distribución de métodos de pago, recargos recaudados y cuentas por cobrar.
-- **[04_accesos_asistencias.sql](sql/08_consultas/04_accesos_asistencias.sql)** (Q61 - Q80): Horas de permanencia real, accesos rechazados por morosidad y ratios de uso de instalaciones.
-- **[05_avanzadas.sql](sql/08_consultas/05_avanzadas.sql)** (Q81 - Q100): KPIs financieros avanzados (LTV, ARPU), comparativa uso real vs. reservado y detección de patrones de fraude.
+- **[01_usuarios_membresias.sql](sql/02_consultas/01_usuarios_membresias.sql)** (Q01 - Q20): Análisis de cohortes, retención, churn rate, distribución por plan y renovación.
+- **[02_espacios_reservas.sql](sql/02_consultas/02_espacios_reservas.sql)** (Q21 - Q40): Ocupación horaria, espacios de mayor demanda, tasas de cancelación y horas pico.
+- **[03_pagos_facturacion.sql](sql/02_consultas/03_pagos_facturacion.sql)** (Q41 - Q60): Flujo de caja, distribución de métodos de pago, recargos recaudados y cuentas por cobrar.
+- **[04_accesos_asistencias.sql](sql/02_consultas/04_accesos_asistencias.sql)** (Q61 - Q80): Horas de permanencia real, accesos rechazados por morosidad y ratios de uso de instalaciones.
+- **[05_consultas_avanzadas.sql](sql/02_consultas/05_consultas_avanzadas.sql)** (Q81 - Q100): KPIs financieros avanzados (LTV, ARPU), comparativa uso real vs. reservado y detección de patrones de fraude.
 
 ---
 
@@ -423,9 +416,9 @@ ORDER BY horas_uso_real DESC;
 
 ---
 
-## Pruebas y Verificación
+## Flujos de Negocio y Verificación
 
-El script [`sql/09_pruebas/01_escenarios.sql`](sql/09_pruebas/01_escenarios.sql) implementa los **11 flujos de verificación cruzada**:
+El diseño de la base de datos articula y garantiza la integridad de los **11 flujos de negocio** mediante la interacción de SPs y triggers:
 
 | Flujo | Circuito de Negocio Verificado | Disparadores y Componentes Involucrados |
 |---|---|---|
