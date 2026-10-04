@@ -265,3 +265,156 @@ BEGIN
       AND YEAR(fecha_pago) = p_anio;
     RETURN v_ingresos;
 END$$
+
+-- Integrante Responsable: Zlatan Ricardo Villamizar 
+
+-- 13. fn_ingresos_por_membresia
+-- Retorna los ingresos netos acumulados correspondientes a un tipo de membresía.
+DROP FUNCTION IF EXISTS fn_ingresos_por_membresia$$
+CREATE FUNCTION fn_ingresos_por_membresia(p_tipo_id INT)
+RETURNS DECIMAL(12,2)
+DETERMINISTIC
+READS SQL DATA
+BEGIN
+    DECLARE v_total DECIMAL(12,2) DEFAULT 0.00;
+    
+    -- Facturas individuales de membresía vinculadas a ese tipo
+    SELECT COALESCE(SUM(p.monto), 0.00) INTO v_total
+    FROM pagos p
+    JOIN facturas f ON p.factura_id = f.id
+    JOIN membresias m ON f.membresia_id = m.id
+    WHERE m.tipo_id = p_tipo_id
+      AND p.estado = 'Aplicado';
+
+    -- Si es Corporativa (tipo_id = 3), suma también las facturas consolidadas de empresas
+    IF p_tipo_id = 3 THEN
+        SELECT v_total + COALESCE(SUM(p.monto), 0.00) INTO v_total
+        FROM pagos p
+        JOIN facturas f ON p.factura_id = f.id
+        WHERE f.tipo = 'Consolidada'
+          AND p.estado = 'Aplicado';
+    END IF;
+
+    RETURN v_total;
+END$$
+
+-- 14. fn_ingresos_por_reservas
+-- Integrante Responsable: Zlatan Ricardo Villamizar 
+
+-- 13. fn_ingresos_por_membresia
+
+DROP FUNCTION IF EXISTS fn_ingresos_por_membresia$$
+CREATE FUNCTION fn_ingresos_por_membresia(p_tipo_id INT)
+RETURNS DECIMAL(12,2)
+DETERMINISTIC
+READS SQL DATA
+BEGIN
+    DECLARE v_total DECIMAL(12,2) DEFAULT 0.00;
+    
+    SELECT COALESCE(SUM(p.monto), 0.00) INTO v_total
+    FROM pagos p
+    JOIN facturas f ON p.factura_id = f.id
+    JOIN membresias m ON f.membresia_id = m.id
+    WHERE m.tipo_id = p_tipo_id
+      AND p.estado = 'Aplicado';
+
+    IF p_tipo_id = 3 THEN
+        SELECT v_total + COALESCE(SUM(p.monto), 0.00) INTO v_total
+        FROM pagos p
+        JOIN facturas f ON p.factura_id = f.id
+        WHERE f.tipo = 'Consolidada'
+          AND p.estado = 'Aplicado';
+    END IF;
+
+    RETURN v_total;
+END$$
+
+-- 14. fn_ingresos_por_reservas
+
+DROP FUNCTION IF EXISTS fn_ingresos_por_reservas$$
+CREATE FUNCTION fn_ingresos_por_reservas(p_mes INT, p_anio INT)
+RETURNS DECIMAL(12,2)
+DETERMINISTIC
+READS SQL DATA
+BEGIN
+    DECLARE v_total DECIMAL(12,2) DEFAULT 0.00;
+    SELECT COALESCE(SUM(p.monto), 0.00) INTO v_total
+    FROM pagos p
+    JOIN facturas f ON p.factura_id = f.id
+    WHERE f.tipo = 'Reserva'
+      AND p.estado = 'Aplicado'
+      AND MONTH(p.fecha_pago) = p_mes
+      AND YEAR(p.fecha_pago) = p_anio;
+    RETURN v_total;
+END$$
+
+-- 15. fn_ingresos_por_empresa
+
+DROP FUNCTION IF EXISTS fn_ingresos_por_empresa$$
+CREATE FUNCTION fn_ingresos_por_empresa(p_empresa_id INT)
+RETURNS DECIMAL(12,2)
+DETERMINISTIC
+READS SQL DATA
+BEGIN
+    DECLARE v_empresa DECIMAL(12,2) DEFAULT 0.00;
+    DECLARE v_empleados DECIMAL(12,2) DEFAULT 0.00;
+
+    SELECT COALESCE(SUM(p.monto), 0.00) INTO v_empresa
+    FROM pagos p
+    JOIN facturas f ON p.factura_id = f.id
+    WHERE f.empresa_id = p_empresa_id
+      AND p.estado = 'Aplicado';
+
+    -- Pagos individuales de usuarios vinculados a esa empresa
+    SELECT COALESCE(SUM(p.monto), 0.00) INTO v_empleados
+    FROM pagos p
+    JOIN facturas f ON p.factura_id = f.id
+    JOIN usuarios u ON f.usuario_id = u.id
+    WHERE u.empresa_id = p_empresa_id
+      AND p.estado = 'Aplicado';
+
+    RETURN (v_empresa + v_empleados);
+END$$.
+DROP FUNCTION IF EXISTS fn_ingresos_por_reservas$$
+CREATE FUNCTION fn_ingresos_por_reservas(p_mes INT, p_anio INT)
+RETURNS DECIMAL(12,2)
+DETERMINISTIC
+READS SQL DATA
+BEGIN
+    DECLARE v_total DECIMAL(12,2) DEFAULT 0.00;
+    SELECT COALESCE(SUM(p.monto), 0.00) INTO v_total
+    FROM pagos p
+    JOIN facturas f ON p.factura_id = f.id
+    WHERE f.tipo = 'Reserva'
+      AND p.estado = 'Aplicado'
+      AND MONTH(p.fecha_pago) = p_mes
+      AND YEAR(p.fecha_pago) = p_anio;
+    RETURN v_total;
+END$$
+
+-- 15. fn_ingresos_por_empresa
+
+DROP FUNCTION IF EXISTS fn_ingresos_por_empresa$$
+CREATE FUNCTION fn_ingresos_por_empresa(p_empresa_id INT)
+RETURNS DECIMAL(12,2)
+DETERMINISTIC
+READS SQL DATA
+BEGIN
+    DECLARE v_empresa DECIMAL(12,2) DEFAULT 0.00;
+    DECLARE v_empleados DECIMAL(12,2) DEFAULT 0.00;
+
+    SELECT COALESCE(SUM(p.monto), 0.00) INTO v_empresa
+    FROM pagos p
+    JOIN facturas f ON p.factura_id = f.id
+    WHERE f.empresa_id = p_empresa_id
+      AND p.estado = 'Aplicado';
+
+    SELECT COALESCE(SUM(p.monto), 0.00) INTO v_empleados
+    FROM pagos p
+    JOIN facturas f ON p.factura_id = f.id
+    JOIN usuarios u ON f.usuario_id = u.id
+    WHERE u.empresa_id = p_empresa_id
+      AND p.estado = 'Aplicado';
+
+    RETURN (v_empresa + v_empleados);
+END$$
