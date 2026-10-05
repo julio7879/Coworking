@@ -160,41 +160,111 @@ WHERE f.tipo = 'Reserva'
   )
 ORDER BY f.monto_total DESC;
 
--- 88: Porcentaje de ocupación global por mes 
+-- 88: Porcentaje de ocupación global por mes
+
+WITH meses AS (
+    SELECT
+        YEAR(a.fecha_entrada) AS anio,
+        MONTH(a.fecha_entrada) AS mes,
+        DAY(LAST_DAY(a.fecha_entrada)) AS dias_mes
+    FROM asistencias a
+    WHERE a.tipo = 'Sala'
+    GROUP BY
+        YEAR(a.fecha_entrada),
+        MONTH(a.fecha_entrada),
+        DAY(LAST_DAY(a.fecha_entrada))
+),
+
+uso_mensual AS (
+    SELECT
+        YEAR(a.fecha_entrada) AS anio,
+        MONTH(a.fecha_entrada) AS mes,
+
+        ROUND(
+            SUM(
+                TIMESTAMPDIFF(
+                    MINUTE,
+                    GREATEST(
+                        a.fecha_entrada,
+                        r.fecha_inicio
+                    ),
+                    LEAST(
+                        COALESCE(a.fecha_salida, NOW()),
+                        r.fecha_fin
+                    )
+                )
+            ),
+            0
+        ) AS minutos_uso_real
+
+    FROM asistencias a
+
+    JOIN reservas r
+        ON a.reserva_id = r.id
+
+    WHERE a.tipo = 'Sala'
+
+    GROUP BY
+        YEAR(a.fecha_entrada),
+        MONTH(a.fecha_entrada)
+),
+
+capacidad AS (
+    SELECT
+        COUNT(DISTINCT e.id) AS cantidad_espacios,
+
+        SUM(
+            TIME_TO_SEC(
+                TIMEDIFF(
+                    hd.hora_cierre,
+                    hd.hora_apertura
+                )
+            ) / 60.0
+        ) AS minutos_horario_diario
+
+    FROM espacios e
+
+    CROSS JOIN horarios_disponibilidad hd
+
+    WHERE hd.espacio_id IS NULL
+)
 
 SELECT
-    YEAR(a.fecha_entrada)  AS anio,
-    MONTH(a.fecha_entrada) AS mes,
-    ROUND(SUM(
-        TIMESTAMPDIFF(MINUTE,
-            GREATEST(a.fecha_entrada, r.fecha_inicio),
-            LEAST(COALESCE(a.fecha_salida, NOW()), r.fecha_fin)
-        )
-    ), 0) AS minutos_uso_real,
-    (
-        SELECT COUNT(DISTINCT e2.id) *
-            SUM(TIME_TO_SEC(TIMEDIFF(hd2.hora_cierre, hd2.hora_apertura)) / 60.0 * DAY(LAST_DAY(a.fecha_entrada)))
-        FROM espacios e2, horarios_disponibilidad hd2
-        WHERE hd2.espacio_id IS NULL
-        LIMIT 1
-    ) AS minutos_disponibles_estimado,
+    u.anio,
+    u.mes,
+
+    u.minutos_uso_real,
+
     ROUND(
-        SUM(TIMESTAMPDIFF(MINUTE,
-            GREATEST(a.fecha_entrada, r.fecha_inicio),
-            LEAST(COALESCE(a.fecha_salida, NOW()), r.fecha_fin)
-        )) * 100.0 /
-        NULLIF((
-            SELECT AVG(TIME_TO_SEC(TIMEDIFF(hd3.hora_cierre, hd3.hora_apertura)) / 60.0) *
-                   COUNT(DISTINCT e3.id) * 30
-            FROM espacios e3, horarios_disponibilidad hd3
-            WHERE hd3.espacio_id IS NULL
-        ), 0),
-    2) AS pct_ocupacion_global
-FROM asistencias a
-JOIN reservas r ON a.reserva_id = r.id
-WHERE a.tipo = 'Sala'
-GROUP BY YEAR(a.fecha_entrada), MONTH(a.fecha_entrada)
-ORDER BY anio DESC, mes DESC;
+        c.cantidad_espacios
+        * c.minutos_horario_diario
+        * m.dias_mes,
+        0
+    ) AS minutos_disponibles_estimado,
+
+    ROUND(
+        u.minutos_uso_real * 100.0
+        /
+        NULLIF(
+            c.cantidad_espacios
+            * c.minutos_horario_diario
+            * m.dias_mes,
+            0
+        ),
+        2
+    ) AS pct_ocupacion_global
+
+FROM uso_mensual u
+
+JOIN meses m
+    ON m.anio = u.anio
+    AND m.mes = u.mes
+
+CROSS JOIN capacidad c
+
+ORDER BY
+    u.anio DESC,
+    u.mes DESC;
 
 -- 89: Usuarios que han reservado más horas que el promedio del coworking
 
@@ -338,31 +408,50 @@ SELECT
     u.email,
     e.nombre AS empresa,
     COUNT(r.id) AS reservas_usuario,
-    (
-        SELECT AVG(cnt_r.total_r)
-        FROM (
-            SELECT COUNT(r2.id) AS total_r
-            FROM reservas r2
-            JOIN usuarios u2 ON r2.usuario_id = u2.id
-            WHERE u2.empresa_id = u.empresa_id
-            GROUP BY u2.id
-        ) AS cnt_r
-    ) AS promedio_empresa
+    promedios.promedio_empresa
+
 FROM usuarios u
-JOIN empresas e ON u.empresa_id = e.id
-LEFT JOIN reservas r ON r.usuario_id = u.id
-GROUP BY u.id, u.nombre, u.apellidos, e.id, e.nombre
-HAVING COUNT(r.id) > (
-    SELECT AVG(cnt_r2.total_r2)
-    FROM (
-        SELECT COUNT(r3.id) AS total_r2
-        FROM reservas r3
-        JOIN usuarios u3 ON r3.usuario_id = u3.id
-        WHERE u3.empresa_id = u.empresa_id
-        GROUP BY u3.id
-    ) AS cnt_r2
-)
-ORDER BY reservas_usuario DESC;
+
+JOIN empresas e
+    ON u.empresa_id = e.id
+
+LEFT JOIN reservas r
+    ON r.usuario_id = u.id
+
+JOIN (
+    SELECT
+        u2.empresa_id,
+        AVG(reservas_usuario.total_r) AS promedio_empresa
+
+    FROM usuarios u2
+
+    LEFT JOIN (
+        SELECT
+            usuario_id,
+            COUNT(id) AS total_r
+        FROM reservas
+        GROUP BY usuario_id
+    ) AS reservas_usuario
+        ON reservas_usuario.usuario_id = u2.id
+
+    GROUP BY u2.empresa_id
+
+) AS promedios
+    ON promedios.empresa_id = u.empresa_id
+
+GROUP BY
+    u.id,
+    u.nombre,
+    u.apellidos,
+    u.email,
+    e.id,
+    e.nombre,
+    promedios.promedio_empresa
+
+HAVING COUNT(r.id) > promedios.promedio_empresa
+
+ORDER BY
+    reservas_usuario DESC;
 
 -- 97: Top 3 empresas con más empleados con membresía activa
 
